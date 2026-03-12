@@ -2,18 +2,22 @@
 
 namespace App\Providers;
 
+use App\Livewire\CustomSessionGuard;
 use App\Models\User;
+use BezhanSalleh\LanguageSwitch\LanguageSwitch;
+use BladeUI\Icons\Factory as IconFactory;
+use Exception;
 use Filament\Support\Facades\FilamentColor;
+use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\URL;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
+use Log;
 use Schema;
-use BezhanSalleh\FilamentLanguageSwitch\LanguageSwitch;
-
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -22,25 +26,55 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Override the package's SessionGuard component with our custom one
+        Livewire::component('filament-inactivity-guard::session-guard', CustomSessionGuard::class);
+
         // Disable mass assignment protection
         Model::unguard();
-        if (! $this->app->environment('local')) {
-            URL::forceScheme('https');
+
+        // Only skip the install check if running the installer command or actual PHPUnit tests
+        $isInstaller = false;
+        if ($this->app->runningInConsole()) {
+            $argv = $_SERVER['argv'] ?? [];
+            if (isset($argv[1]) && (
+                $argv[1] === 'opengrc:install'
+            || $argv[1] === 'opengrc:deploy'
+            || $argv[1] === 'package:discover'
+            || $argv[1] === 'filament:upgrade'
+            || $argv[1] === 'vendor:publish'
+            || $argv[1] === 'test'
+            )) {
+                $isInstaller = true;
+            }
         }
 
-        // if table "settings" exists
-        if (! app()->runningInConsole()) {
+        // Skip settings config only when running actual PHPUnit tests (not just APP_ENV=testing)
+        if ($this->app->runningUnitTests()) {
+            $isInstaller = true;
+        }
+
+        if (! $isInstaller) {
             if (Schema::hasTable('settings')) {
 
                 Config::set('app.name', setting('general.name', 'OpenGRC'));
                 Config::set('app.url', setting('general.url', 'https://opengrc.test'));
+
+                // Decrypt mail password if it's encrypted
+                $mailPassword = setting('mail.password');
+                if (! empty($mailPassword)) {
+                    try {
+                        $mailPassword = Crypt::decryptString($mailPassword);
+                    } catch (Exception $e) {
+                        // If decryption fails, assume it's plaintext (legacy data)
+                    }
+                }
 
                 config()->set('mail', array_merge(config('mail'), [
                     'driver' => 'smtp',
                     'transport' => 'smtp',
                     'host' => setting('mail.host'),
                     'username' => setting('mail.username'),
-                    'password' => setting('mail.password'),
+                    'password' => $mailPassword,
                     'encryption' => setting('mail.encryption'),
                     'port' => setting('mail.port'),
                     'from' => [
@@ -54,39 +88,53 @@ class AppServiceProvider extends ServiceProvider
 
                 // Ensure local disk is always configured
                 config()->set('filesystems.disks.local', array_merge(config('filesystems.disks.local', []), [
-                    'driver' => 'private',
+                    'driver' => 'local',
                     'root' => storage_path('app'),
                     'throw' => false,
                 ]));
 
-                if ($storageDriver === 's3') {
-                    $s3Key = setting('storage.s3.key');
-                    $s3Secret = setting('storage.s3.secret');
+                // Configure S3-compatible storage (AWS S3 or DigitalOcean Spaces)
+                if (in_array($storageDriver, ['s3', 'digitalocean'])) {
+                    $settingKey = "storage.{$storageDriver}";
+                    $accessKey = setting("{$settingKey}.key");
+                    $secretKey = setting("{$settingKey}.secret");
+                    $region = setting("{$settingKey}.region", $storageDriver === 's3' ? 'us-east-1' : 'nyc3');
+                    $bucket = setting("{$settingKey}.bucket");
 
-                    // Decrypt credentials if they exist and are encrypted
                     try {
-                        if (!empty($s3Key)) {
-                            $s3Key = Crypt::decryptString($s3Key);
+                        // Decrypt credentials if they exist and are encrypted
+                        if (! empty($accessKey)) {
+                            $accessKey = Crypt::decryptString($accessKey);
                         }
-                        if (!empty($s3Secret)) {
-                            $s3Secret = Crypt::decryptString($s3Secret);
+                        if (! empty($secretKey)) {
+                            $secretKey = Crypt::decryptString($secretKey);
                         }
-                    } catch (\Exception $e) {
-                        // If decryption fails, log it but don't expose the error
-                        \Log::error('Failed to decrypt S3 credentials: ' . $e->getMessage());
-                        // Fall back to local storage if S3 credentials can't be decrypted
-                        $storageDriver = 'private';
-                    }
 
-                    if ($storageDriver === 's3') {
-                        config()->set('filesystems.disks.s3', array_merge(config('filesystems.disks.s3', []), [
+                        $diskConfig = [
                             'driver' => 's3',
-                            'key' => $s3Key,
-                            'secret' => $s3Secret,
-                            'region' => setting('storage.s3.region', 'us-east-1'),
-                            'bucket' => setting('storage.s3.bucket'),
-                            'use_path_style_endpoint' => false,
-                        ]));
+                            'key' => $accessKey,
+                            'secret' => $secretKey,
+                            'bucket' => $bucket,
+                        ];
+
+                        if ($storageDriver === 'digitalocean') {
+                            // DigitalOcean Spaces uses path-style endpoint
+                            $diskConfig['region'] = 'us-east-1'; // Always us-east-1 for AWS SDK compatibility
+                            $diskConfig['endpoint'] = 'https://'.strtolower($region).'.digitaloceanspaces.com';
+                            $diskConfig['use_path_style_endpoint'] = true;
+                        } else {
+                            // AWS S3
+                            $diskConfig['region'] = $region;
+                            $diskConfig['use_path_style_endpoint'] = false;
+                        }
+
+                        config()->set("filesystems.disks.{$storageDriver}", array_merge(
+                            config("filesystems.disks.{$storageDriver}", []),
+                            $diskConfig
+                        ));
+                    } catch (Exception $e) {
+                        Log::error("Failed to decrypt {$storageDriver} credentials: ".$e->getMessage());
+                        $storageDriver = 'private';
                     }
                 }
 
@@ -103,13 +151,22 @@ class AppServiceProvider extends ServiceProvider
             }
         }
 
-        Gate::before(function (User $user, string $ability) {
-            return $user->isSuperAdmin() ? true : null;
+        Gate::before(function ($user, string $ability) {
+            // Only apply super admin bypass for regular User model, not VendorUser
+            if ($user instanceof User && $user->isSuperAdmin()) {
+                return true;
+            }
+
+            return null;
         });
 
         LanguageSwitch::configureUsing(function (LanguageSwitch $switch) {
             $switch
-                ->locales(['en','es','fr','hr']); 
+                ->locales(['en', 'es', 'fr', 'hr']);
+        });
+
+        Table::configureUsing(function (Table $table): Table {
+            return $table->paginationPageOptions([10, 25, 50, 100]);
         });
 
         FilamentColor::register([
@@ -147,6 +204,29 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Force HTTPS in production environments (must be in register, not boot)
+        if (! $this->app->environment('local')) {
+            URL::forceScheme('https');
+
+            // Ensure HTTPS is detected from proxy headers
+            $this->app['request']->server->set('HTTPS', 'on');
+            $_SERVER['HTTPS'] = 'on';
+        }
+
+        // Register custom icons
+        $this->callAfterResolving(IconFactory::class, function (IconFactory $factory) {
+            $factory->add('grc', [
+                'path' => resource_path('svg'),
+                'prefix' => 'grc',
+            ]);
+        });
+
+        // Register setting service early so it's available for Filament panel providers
+        // The mangoldsecurity/settings package registers this in boot() which is too late
+        if (! $this->app->bound('setting')) {
+            $this->app->singleton('setting', function () {
+                return new \MangoldSecurity\Settings\Services\Setting;
+            });
+        }
     }
 }

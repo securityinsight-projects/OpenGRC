@@ -36,6 +36,13 @@ return [
             'throw' => false,
         ],
 
+        // Used by Livewire for temporary file uploads in testing environment
+        'tmp-for-tests' => [
+            'driver' => 'local',
+            'root' => storage_path('app/livewire-tmp'),
+            'throw' => false,
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
@@ -49,6 +56,7 @@ return [
             'root' => storage_path('app/private'),
             'visibility' => 'private',
             'url' => env('APP_URL').'/app/priv-storage',
+            'throw' => false,
         ],
 
         's3' => [
@@ -57,9 +65,25 @@ return [
             'secret' => env('AWS_SECRET_ACCESS_KEY'),
             'region' => env('AWS_DEFAULT_REGION'),
             'bucket' => env('AWS_BUCKET'),
-            'url' => env('AWS_URL'),
+            'url' => env('AWS_URL', env('APP_URL').'/media'),
             'endpoint' => env('AWS_ENDPOINT'),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
+            'throw' => false,
+            'visibility' => 'private',
+            'options' => [
+                'CacheControl' => 'max-age=31536000, public',
+            ],
+        ],
+
+        'digitalocean' => [
+            'driver' => 's3',
+            'key' => env('DO_SPACES_KEY'),
+            'secret' => env('DO_SPACES_SECRET'),
+            'region' => env('DO_SPACES_REGION', 'us-east-1'),
+            'bucket' => env('DO_SPACES_BUCKET'),
+            'url' => env('DO_SPACES_URL', env('APP_URL').'/media'),
+            'endpoint' => env('DO_SPACES_ENDPOINT'),
+            'use_path_style_endpoint' => env('DO_SPACES_USE_PATH_STYLE', true),
             'throw' => false,
         ],
 

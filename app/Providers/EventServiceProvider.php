@@ -2,10 +2,18 @@
 
 namespace App\Providers;
 
+use App\Listeners\LogFailedLogin;
+use App\Listeners\LogSuccessfulLogin;
+use App\Listeners\LogSuccessfulLogout;
+use App\Listeners\SendCommentMentionNotification;
+use Illuminate\Auth\Events\Failed;
+use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\Events\Logout;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Auth\Listeners\SendEmailVerificationNotification;
 use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
 use Illuminate\Support\Facades\Event;
+use Kirschbaum\Commentions\Events\UserWasMentionedEvent;
 use SocialiteProviders\Auth0\Auth0ExtendSocialite;
 use SocialiteProviders\Azure\AzureExtendSocialite;
 use SocialiteProviders\Google\GoogleExtendSocialite;
@@ -28,6 +36,18 @@ class EventServiceProvider extends ServiceProvider
             AzureExtendSocialite::class.'@handle',
             GoogleExtendSocialite::class.'@handle',
             Auth0ExtendSocialite::class.'@handle',
+        ],
+        Login::class => [
+            LogSuccessfulLogin::class,
+        ],
+        Logout::class => [
+            LogSuccessfulLogout::class,
+        ],
+        Failed::class => [
+            LogFailedLogin::class,
+        ],
+        UserWasMentionedEvent::class => [
+            SendCommentMentionNotification::class,
         ],
     ];
 

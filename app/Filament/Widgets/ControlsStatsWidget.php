@@ -4,15 +4,16 @@ namespace App\Filament\Widgets;
 
 use App\Enums\Applicability;
 use App\Enums\Effectiveness;
-use App\Models\Control;
-use App\Models\Standard;
 use Filament\Widgets\ChartWidget;
+use Illuminate\Support\Facades\DB;
 
 class ControlsStatsWidget extends ChartWidget
 {
-    protected static ?string $heading = null;
+    protected static bool $isLazy = false;
 
-    protected static ?string $maxHeight = '250px';
+    protected ?string $heading = null;
+
+    protected ?string $maxHeight = '250px';
 
     protected int|string|array $columnSpan = '1';
 
@@ -25,31 +26,34 @@ class ControlsStatsWidget extends ChartWidget
 
     protected function getData(): array
     {
-        $in_scope_standards = Standard::where('status', 'In Scope')->get();
+        // Single query with conditional aggregation and inline subquery for in-scope standards
+        $counts = DB::selectOne('
+            SELECT
+                COALESCE(SUM(CASE WHEN effectiveness = ? AND applicability = ? THEN 1 ELSE 0 END), 0) as effective,
+                COALESCE(SUM(CASE WHEN effectiveness = ? AND applicability = ? THEN 1 ELSE 0 END), 0) as partial,
+                COALESCE(SUM(CASE WHEN effectiveness = ? AND applicability = ? THEN 1 ELSE 0 END), 0) as ineffective,
+                COALESCE(SUM(CASE WHEN effectiveness = ? AND applicability != ? THEN 1 ELSE 0 END), 0) as unknown
+            FROM controls
+            WHERE standard_id IN (SELECT id FROM standards WHERE status = ?)
+        ', [
+            Effectiveness::EFFECTIVE->value, Applicability::APPLICABLE->value,
+            Effectiveness::PARTIAL->value, Applicability::APPLICABLE->value,
+            Effectiveness::INEFFECTIVE->value, Applicability::APPLICABLE->value,
+            Effectiveness::UNKNOWN->value, Applicability::NOTAPPLICABLE->value,
+            'In Scope',
+        ]);
 
-        $effective = Control::where('effectiveness', Effectiveness::EFFECTIVE)
-            ->where('applicability', Applicability::APPLICABLE)
-            ->whereIn('standard_id', $in_scope_standards->pluck('id'))
-            ->count() ?: 0;
-        $partial = Control::where('effectiveness', Effectiveness::PARTIAL)
-            ->where('applicability', Applicability::APPLICABLE)
-            ->whereIn('standard_id', $in_scope_standards->pluck('id'))
-            ->count() ?: 0;
-        $ineffective = Control::where('effectiveness', Effectiveness::INEFFECTIVE)
-            ->where('applicability', Applicability::APPLICABLE)
-            ->whereIn('standard_id', $in_scope_standards->pluck('id'))
-            ->count() ?: 0;
-        $unknown = Control::where('effectiveness', Effectiveness::UNKNOWN)
-            ->where('applicability', '!=', Applicability::NOTAPPLICABLE)
-            ->whereIn('standard_id', $in_scope_standards->pluck('id'))
-            ->count() ?: 0;
+        $effective = (int) $counts->effective;
+        $partial = (int) $counts->partial;
+        $ineffective = (int) $counts->ineffective;
+        $unknown = (int) $counts->unknown;
 
         return [
             'labels' => [
                 __('widgets.controls_stats.effective'),
                 __('widgets.controls_stats.partially_effective'),
                 __('widgets.controls_stats.ineffective'),
-                __('widgets.controls_stats.not_assessed')
+                __('widgets.controls_stats.not_assessed'),
             ],
             'datasets' => [
                 [

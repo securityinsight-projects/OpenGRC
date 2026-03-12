@@ -4,20 +4,21 @@ namespace App\Filament\Pages;
 
 use App\Enums\ResponseStatus;
 use App\Models\DataRequestResponse;
+use Filament\Actions\Action;
 use Filament\Pages\Page;
-use Filament\Tables;
-use Filament\Tables\Actions\Action;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Concerns\InteractsWithTable;
+use Filament\Tables\Contracts\HasTable;
+use Filament\Tables\Filters\SelectFilter;
 use Illuminate\Database\Eloquent\Builder;
 
-class ToDo extends Page implements Tables\Contracts\HasTable
+class ToDo extends Page implements HasTable
 {
     use InteractsWithTable;
 
-    protected static ?string $navigationIcon = 'heroicon-o-check-circle';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-check-circle';
 
-    protected static string $view = 'filament.pages.to-do';
+    protected string $view = 'filament.pages.to-do';
 
     public static function getNavigationLabel(): string
     {
@@ -26,7 +27,14 @@ class ToDo extends Page implements Tables\Contracts\HasTable
 
     public static function getNavigationBadge(): ?string
     {
-        $count = auth()->user()->openTodos()->count();
+        $user = auth()->user();
+
+        // Only show badge for regular users with openTodos method
+        if (! $user || ! method_exists($user, 'openTodos')) {
+            return null;
+        }
+
+        $count = $user->openTodos()->count();
 
         if ($count > 99) {
             return '99+';
@@ -35,7 +43,6 @@ class ToDo extends Page implements Tables\Contracts\HasTable
         }
 
         return null;
-
     }
 
     protected function getTableQuery(): Builder
@@ -46,18 +53,19 @@ class ToDo extends Page implements Tables\Contracts\HasTable
     protected function getTableColumns(): array
     {
         return [
-            TextColumn::make('id')->label('ID')->sortable(),
-            TextColumn::make('dataRequest.audit.title')->label('Audit'),
-            TextColumn::make('dataRequest.details')->label('Requested Information')->html()->limit(100),
-            TextColumn::make('due_at')->label('Due At'),
-            TextColumn::make('status')->label('Status'),
+            TextColumn::make('id')->label('ID')->sortable()->searchable(),
+            TextColumn::make('dataRequest.code')->label('Request Code')->searchable(),
+            TextColumn::make('dataRequest.audit.title')->label('Audit')->searchable(),
+            TextColumn::make('dataRequest.details')->label('Requested Information')->html()->limit(100)->wrap(),
+            TextColumn::make('due_at')->label('Due At')->searchable(),
+            TextColumn::make('status')->label('Status')->searchable()->badge(),
         ];
     }
 
     protected function getTableFilters(): array
     {
         return [
-            Tables\Filters\SelectFilter::make('status')
+            SelectFilter::make('status')
                 ->label('Show Responded')
                 ->multiple()
                 ->options(ResponseStatus::class)

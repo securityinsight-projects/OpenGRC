@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use Aliziodev\LaravelTaxonomy\Traits\HasTaxonomy;
 use App\Enums\WorkflowStatus;
+use App\Mcp\Traits\HasMcpSupport;
 use Eloquent;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -12,6 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 /**
  * Class Audit
@@ -49,7 +53,7 @@ use Illuminate\Support\Carbon;
  */
 class Audit extends Model
 {
-    use HasFactory;
+    use HasFactory, HasMcpSupport, HasTaxonomy, LogsActivity;
 
     /**
      * The attributes that are mass assignable.
@@ -60,9 +64,11 @@ class Audit extends Model
         'title',
         'description',
         'status',
+        'audit_type',
         'start_date',
         'end_date',
         'program_id',
+        'manager_id',
     ];
 
     /**
@@ -126,5 +132,13 @@ class Audit extends Model
     public function program(): BelongsTo
     {
         return $this->belongsTo(Program::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['title', 'status', 'start_date', 'end_date', 'manager_id', 'program_id'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

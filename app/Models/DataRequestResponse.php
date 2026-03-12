@@ -9,10 +9,14 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Kirschbaum\Commentions\Contracts\Commentable;
+use Kirschbaum\Commentions\HasComments;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
-class DataRequestResponse extends Model
+class DataRequestResponse extends Model implements Commentable
 {
-    use HasFactory;
+    use HasComments, HasFactory, LogsActivity;
 
     protected $casts = [
         'status' => ResponseStatus::class,
@@ -44,5 +48,18 @@ class DataRequestResponse extends Model
     public function attachments(): HasMany
     {
         return $this->hasMany(FileAttachment::class, 'data_request_response_id');
+    }
+
+    public function policyAttachments(): HasMany
+    {
+        return $this->hasMany(DataRequestResponsePolicy::class);
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['status', 'due_at', 'requester_id', 'requestee_id', 'data_request_id'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

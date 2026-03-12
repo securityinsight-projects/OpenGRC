@@ -12,7 +12,12 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call(SettingsSeeder::class);
+        $this->call(McpSettingsSeeder::class);
         $this->call(UserSeeder::class);
         $this->call(RolePermissionSeeder::class);
+        $this->call(AssetTaxonomySeeder::class);
+        $this->call(VendorSurveyTemplatesSeeder::class);
+        $this->call(TrustCenterContentBlockSeeder::class);
+        
     }
 }

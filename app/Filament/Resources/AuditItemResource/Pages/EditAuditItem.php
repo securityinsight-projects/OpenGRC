@@ -13,14 +13,21 @@ use App\Mail\EvidenceRequestMail;
 use App\Models\AuditItem;
 use App\Models\DataRequest;
 use App\Models\User;
+use Exception;
 use Filament\Actions\Action;
-use Filament\Forms;
+use Filament\Forms\Components\Checkbox;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\RichEditor;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\ToggleButtons;
-use Filament\Forms\Form;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Components\Group;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\HtmlString;
 
@@ -54,7 +61,14 @@ class EditAuditItem extends EditRecord
                     $dataRequest->created_by_id = auth()->id();
                     $dataRequest->assigned_to_id = $data['user_id'];
                     $dataRequest->details = $data['details'];
+                    $dataRequest->code = $data['code'] ?? null;
                     $dataRequest->save();
+
+                    // If code is still null after save, set to Request-{id}
+                    if (! $dataRequest->code) {
+                        $dataRequest->code = 'Request-'.$dataRequest->id;
+                        $dataRequest->save();
+                    }
 
                     if ($data['send_email']) {
                         $user = User::find($dataRequest->assigned_to_id);
@@ -65,7 +79,7 @@ class EditAuditItem extends EditRecord
 
                         try {
                             Mail::to($data['email'])->send(new EvidenceRequestMail($data['email'], $data['name']));
-                        } catch (\Exception $e) {
+                        } catch (Exception $e) {
                             Notification::make()
                                 ->title('Failed to send email')
                                 ->danger()
@@ -83,26 +97,31 @@ class EditAuditItem extends EditRecord
                         ->success()
                         ->send();
                 })
-                ->form([
-                    Forms\Components\Group::make()
+                ->schema([
+                    Group::make()
                         ->columns(2)
                         ->schema([
-                            Forms\Components\Select::make('user_id')
+                            Select::make('user_id')
                                 ->label('Assigned To')
-                                ->options(User::pluck('name', 'id'))
+                                ->options(User::activeOptions())
                                 ->default($this->record->audit->manager_id)
                                 ->required()
                                 ->searchable(),
-                            Forms\Components\DatePicker::make('due_at')
+                            DatePicker::make('due_at')
                                 ->label('Due Date')
                                 ->default(HelperController::getEndDate($this->record->audit->end_date, 5))
                                 ->required(),
-                            Forms\Components\Textarea::make('details')
+                            Textarea::make('details')
                                 ->label('Request Details')
                                 ->maxLength(65535)
                                 ->columnSpanFull()
                                 ->required(),
-                            Forms\Components\Checkbox::make('send_email')
+                            TextInput::make('code')
+                                ->label('Request Code')
+                                ->maxLength(255)
+                                ->helperText('Optional. If left blank, will default to Request-{id} after creation.')
+                                ->nullable(),
+                            Checkbox::make('send_email')
                                 ->label('Send Email Notification')
                                 ->default(true),
                         ]),
@@ -113,11 +132,12 @@ class EditAuditItem extends EditRecord
         ];
     }
 
-    public function form(Form $form): Form
+    public function form(Schema $schema): Schema
     {
-        return $form
-            ->schema([
-                Forms\Components\Section::make('Item Information')
+        return $schema
+            ->components([
+                Section::make('Item Information')
+                    ->columnSpanFull()
                     ->schema([
                         Placeholder::make('control_code')
                             ->label('Code')
@@ -127,16 +147,22 @@ class EditAuditItem extends EditRecord
                             ->content(fn (AuditItem $record): ?string => $record->auditable->title),
                         Placeholder::make('control_desc')
                             ->label('Description')
-                            ->content(fn (AuditItem $record): HtmlString => new HtmlString(optional($record->auditable)->description ?? ''))
+                            ->extraAttributes(['class' => 'control-description-text'])
+                            ->content(fn (AuditItem $record): HtmlString => new HtmlString(optional($record->auditable)->description ?? optional($record->auditable)->details ?? ''))
                             ->columnSpanFull(),
                         Placeholder::make('control_discussion')
-                            ->label('Discussion')
-                            ->content(fn (AuditItem $record): HtmlString => new HtmlString(optional($record->auditable)->discussion ?? ''))
+                            ->label($this->record->audit->audit_type == 'implementations' ? 'Test Procedure' : 'Discussion')
+                            ->content(fn (AuditItem $record): HtmlString => new HtmlString(
+                                $record->audit->audit_type == 'implementations'
+                                    ? (optional($record->auditable)->test_procedure ?? '<em>No test procedure provided.</em>')
+                                    : (optional($record->auditable)->discussion ?? '<em>No discussion provided.</em>')
+                            ))
                             ->columnSpanFull(),
 
                     ])->columns(2)->collapsible(true),
 
-                Forms\Components\Section::make('Evaluation')
+                Section::make('Evaluation')
+                    ->columnSpanFull()
                     ->schema([
                         ToggleButtons::make('status')
                             ->label('Status')
@@ -158,19 +184,19 @@ class EditAuditItem extends EditRecord
                             ->maxLength(65535)
                             ->disableToolbarButtons([
                                 'image',
-                                'attachFiles'
+                                'attachFiles',
                             ])
                             ->label('Auditor Notes'),
                     ]),
 
-                Forms\Components\Section::make('Audit Evidence')
+                Section::make('Audit Evidence')
+                    ->columnSpanFull()
                     ->schema([
-                        // Todo: This can be replaced with a Repeater component when nested relationships are
-                        // supported in Filament - potentially in v4.x. Or, maybe do a footer widget.
+                        // When auditing controls, show associated implementations
                         Placeholder::make('control.implementations')
                             ->hidden($this->record->audit->audit_type == 'implementations')
                             ->label('Documented Implementations')
-                            ->view('tables.implementations-table', ['implementations' => $this->record->auditable->implementations])
+                            ->view('tables.implementations-table', ['implementations' => $this->record->auditable->implementations ?? collect()])
                             ->columnSpanFull()
                             ->hintIcon('heroicon-m-question-mark-circle', tooltip: 'Implementations that are related to this control.'),
                         Placeholder::make('data_requests')

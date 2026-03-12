@@ -2,57 +2,51 @@
 
 namespace App\Filament\Resources\VendorResource\RelationManagers;
 
-use App\Enums\ApplicationStatus;
-use App\Enums\ApplicationType;
-use Filament\Forms;
+use App\Filament\Resources\ApplicationResource;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\CreateAction;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\EditAction;
 use Filament\Resources\RelationManagers\RelationManager;
-use Filament\Tables;
+use Filament\Schemas\Schema;
+use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class ApplicationsRelationManager extends RelationManager
 {
     protected static string $relationship = 'applications';
-    protected static ?string $recordTitleAttribute = 'name';
 
-    public function form(Forms\Form $form): Forms\Form
+    public function form(Schema $schema): Schema
     {
-        return $form
-            ->schema([
-                Forms\Components\TextInput::make('name')->required()->maxLength(255),
-                Forms\Components\Select::make('owner_id')->relationship('owner', 'name')->searchable()->preload()->required(),
-                Forms\Components\Select::make('type')->enum(ApplicationType::class)->options(collect(ApplicationType::cases())->mapWithKeys(fn($case) => [$case->value => $case->getLabel()]))->required(),
-                Forms\Components\Textarea::make('description')->maxLength(65535),
-                Forms\Components\Select::make('status')->enum(ApplicationStatus::class)->options(collect(ApplicationStatus::cases())->mapWithKeys(fn($case) => [$case->value => $case->getLabel()]))->required(),
-                Forms\Components\TextInput::make('url')->maxLength(512),
-                Forms\Components\Textarea::make('notes')->maxLength(65535),
-            ]);
+        return ApplicationResource::form($schema);
     }
 
     public function table(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['owner' => fn ($q) => $q->withTrashed()]))
             ->columns([
-                Tables\Columns\TextColumn::make('name')->searchable(),
-                Tables\Columns\TextColumn::make('owner.name')->label('Owner')->searchable(),
-                Tables\Columns\TextColumn::make('type')->badge()->color(fn($record) => $record->type->getColor()),
-                Tables\Columns\TextColumn::make('status')->badge()->color(fn($record) => $record->status->getColor()),
-                Tables\Columns\TextColumn::make('url')->url(fn($record) => $record->url, true),
-                Tables\Columns\TextColumn::make('created_at')->dateTime()->sortable(),
+                TextColumn::make('name')->searchable(),
+                TextColumn::make('owner.name')->label('Owner')->formatStateUsing(fn ($record): string => $record->owner?->displayName() ?? '')->searchable(),
+                TextColumn::make('type')->badge()->color(fn ($record) => $record->type->getColor()),
+                TextColumn::make('status')->badge()->color(fn ($record) => $record->status->getColor()),
+                TextColumn::make('url')->url(fn ($record) => $record->url, true),
+                TextColumn::make('created_at')->dateTime()->sortable(),
             ])
             ->filters([
                 //
             ])
             ->headerActions([
-                Tables\Actions\CreateAction::make(),
-                Tables\Actions\AttachAction::make(),
+                CreateAction::make(),
             ])
-            ->actions([
-                Tables\Actions\EditAction::make(),
+            ->recordActions([
+                EditAction::make(),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make(),
                 ]),
             ]);
     }
-} 
+}

@@ -12,15 +12,24 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Illuminate\Support\Facades\Log;
-use Jeffgreco13\FilamentBreezy\Traits\TwoFactorAuthenticatable;
-use Laravel\Sanctum\HasApiTokens;
-use Spatie\Permission\Traits\HasRoles;
 use Illuminate\Support\Facades\DB;
+use Jeffgreco13\FilamentBreezy\Traits\TwoFactorAuthenticatable;
+use Kirschbaum\Commentions\Contracts\Commenter;
+use Laravel\Sanctum\HasApiTokens;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
+use Spatie\Permission\Traits\HasRoles;
 
-class User extends Authenticatable implements FilamentUser
+/**
+ * @property \Illuminate\Support\Carbon|null $last_activity
+ */
+class User extends Authenticatable implements Commenter, FilamentUser
 {
-    use HasApiTokens, HasFactory, HasRoles, HasSuperAdmin, Notifiable, softDeletes, TwoFactorAuthenticatable;
+    use HasApiTokens, HasFactory, HasRoles, HasSuperAdmin, LogsActivity, Notifiable, softDeletes, TwoFactorAuthenticatable;
+
+    protected static $logOnlyDirty = true;
+
+    protected static $logName = 'user';
 
     /**
      * The attributes that are mass assignable.
@@ -29,6 +38,7 @@ class User extends Authenticatable implements FilamentUser
      */
     protected $fillable = [
         'name',
+        'text',
         'email',
         'password',
     ];
@@ -39,9 +49,8 @@ class User extends Authenticatable implements FilamentUser
      * @var array<int, string>
      */
     protected $guarded = [
-        'last_activity'
+        'last_activity',
     ];
-
 
     /**
      * The attributes that should be hidden for serialization.
@@ -64,43 +73,15 @@ class User extends Authenticatable implements FilamentUser
         'password' => 'hashed',
     ];
 
-    protected static function booted()
-    {
-        // static::saving(function ($user) {
-        //     if ($user->isDirty('last_activity')) {
-        //         Log::debug('Attempt to update last_activity through model save', [
-        //             'trace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS),
-        //             'dirty' => $user->getDirty()
-        //         ]);
-        //         // Prevent the update of last_activity through normal model operations
-        //         $user->last_activity = $user->getOriginal('last_activity');
-        //     }
-        // });
-
-        // static::updating(function ($user) {
-        //     if ($user->isDirty('last_activity')) {
-        //         Log::debug('Attempt to update last_activity through model update', [
-        //             'trace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS),
-        //             'dirty' => $user->getDirty()
-        //         ]);
-        //         // Prevent the update of last_activity through normal model operations
-        //         $user->last_activity = $user->getOriginal('last_activity');
-        //     }
-        // });
-    }
-
     /**
      * Update the user's last activity timestamp.
-     *
-     * @return bool
      */
     public function updateLastActivity(): void
-    {       
+    {
         DB::table('users')
             ->where('id', $this->id)
             ->update(['last_activity' => now()]);
 
-        Log::debug('User Logged In');
     }
 
     public function canAccessPanel(Panel $panel): bool
@@ -121,12 +102,55 @@ class User extends Authenticatable implements FilamentUser
     public function openTodos(): HasMany
     {
         return $this->hasMany(DataRequestResponse::class, 'requestee_id')
-            ->where('status', ResponseStatus::PENDING)
-            ->orWhere('status', ResponseStatus::REJECTED);
+            ->whereIn('status', [ResponseStatus::PENDING, ResponseStatus::REJECTED]);
     }
 
     public function managedPrograms(): HasMany
     {
         return $this->hasMany(Program::class, 'program_manager_id');
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['name', 'email'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
+    }
+
+    /**
+     * Get the display name, appending (Deactivated) for soft-deleted users.
+     */
+    public function displayName(): string
+    {
+        return $this->trashed() ? $this->name.' (Deactivated)' : $this->name;
+    }
+
+    /**
+     * Get active (non-deleted) user options for select fields.
+     *
+     * @return array<int, string>
+     */
+    public static function activeOptions(): array
+    {
+        return static::whereNotNull('name')
+            ->pluck('name', 'id')
+            ->toArray();
+    }
+
+    /**
+     * Get user options for select fields, including soft-deleted users with (Deactivated) label.
+     *
+     * @return array<int, string>
+     */
+    public static function optionsWithDeactivated(): array
+    {
+        return static::withTrashed()
+            ->whereNotNull('name')
+            ->get()
+            ->mapWithKeys(fn (User $user) => [
+                $user->id => $user->trashed() ? "{$user->name} (Deactivated)" : $user->name,
+            ])
+            ->toArray();
     }
 }

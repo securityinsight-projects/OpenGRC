@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 use function Laravel\Prompts\password;
 use function Laravel\Prompts\select;
@@ -145,6 +146,9 @@ class Install extends Command
             touch($db_database);
         }
 
+        // Purge any existing database connections to ensure fresh connection to new file
+        DB::purge();
+
         // Clear the config cache to pick up new .env settings.
         $this->call('config:clear');
 
@@ -172,6 +176,10 @@ class Install extends Command
             'key' => 'general.url',
             'value' => $site_url,
         ]);
+        $this->call('settings:set', [
+            'key' => 'storage.driver',
+            'value' => 'private',
+        ]);
 
         // Update .env with site settings.
         $this->updateEnv([
@@ -179,12 +187,16 @@ class Install extends Command
             'APP_URL' => $site_url,
         ]);
 
+        // Link public storage to public folder.
+        $this->info('Linking public storage to public folder');
+        $this->call('storage:link');
+
         // Build front-end assets.
         $this->info('Building Front-End assets');
         exec('npm install && npm run build');
 
         // Set starter filesystem permissions.
-        if (PHP_OS=="Linux") {
+        if (PHP_OS == 'Linux') {
             $this->info('Setting filesystem permissions');
             exec('find . -type f -print0 | xargs --null sudo chmod 666');
             exec('find . -type d -print0 | xargs --null sudo chmod 775');
@@ -215,7 +227,7 @@ class Install extends Command
         $envContent = file_get_contents($envPath);
 
         foreach ($data as $key => $value) {
-            $envContent = preg_replace("/^{$key}=.*/m", "{$key}={$value}", $envContent);
+            $envContent = preg_replace("/^{$key}=.*/m", "{$key}=\"{$value}\"", $envContent);
         }
 
         file_put_contents($envPath, $envContent);

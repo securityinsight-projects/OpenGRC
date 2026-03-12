@@ -2,52 +2,35 @@
 
 namespace App\Filament\Pages;
 
-use JibayMcs\FilamentTour\Tour\HasTour;
-use JibayMcs\FilamentTour\Tour\Step;
-use JibayMcs\FilamentTour\Tour\Tour;
+use App\Filament\Widgets\AuditListWidget;
+use App\Filament\Widgets\ControlsStatsWidget;
+use App\Filament\Widgets\ImplementationsStatsWidget;
+use App\Filament\Widgets\StatsOverview;
+use App\Filament\Widgets\ToDoListWidget;
 
-class Dashboard extends \Filament\Pages\Dashboard
+class Dashboard extends TabbedPage
 {
-    use HasTour;
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-home';
 
-    public function getColumns(): int|string|array
-    {
-        return 3;
-    }
+    protected static ?string $navigationLabel = 'Dashboard';
+
+    protected static ?string $title = 'Dashboard';
+
+    protected static ?int $navigationSort = -2;
 
     public function getWidgets(): array
     {
         return [
-            \App\Filament\Widgets\StatsOverview::class,
-            \App\Filament\Widgets\ControlsStatsWidget::class,
-            //            \App\Filament\Widgets\IntroWidget::class,
-            \App\Filament\Widgets\AuditListWidget::class,
-            \App\Filament\Widgets\ImplementationsStatsWidget::class,
-            \App\Filament\Widgets\ToDoListWidget::class,
-
+            StatsOverview::class,
+            ControlsStatsWidget::class,
+            AuditListWidget::class,
+            ImplementationsStatsWidget::class,
+            ToDoListWidget::class,
         ];
     }
 
-    /**
-     * @throws \Exception
-     */
-    // todo: add the tour to the dashboard
-    public function tours(): array
+    public function getColumns(): int|string|array
     {
-        return [
-            Tour::make('dashboard')
-                ->colors('primary', 'light')
-                ->steps(
-                    Step::make()
-                        ->title('Welcome to OpenGRC !')
-                        ->description(view('tutorial.dashboard.introduction')),
-
-                    Step::make('.fi-avatar')
-                        ->title('Woaw ! Here is your avatar !')
-                        ->description('You look nice !')
-                        ->icon('heroicon-o-user-circle')
-                        ->iconColor('primary')
-                ),
-        ];
+        return 3;
     }
 }

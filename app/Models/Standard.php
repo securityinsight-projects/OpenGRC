@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use Aliziodev\LaravelTaxonomy\Traits\HasTaxonomy;
 use App\Enums\StandardStatus;
+use App\Mcp\Traits\HasMcpSupport;
 use Eloquent;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -12,6 +14,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 /**
  * Class Standard
@@ -40,7 +44,7 @@ use Illuminate\Support\Carbon;
  */
 class Standard extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, HasMcpSupport, HasTaxonomy, LogsActivity, SoftDeletes;
 
     /**
      * The attributes that should be cast.
@@ -82,6 +86,12 @@ class Standard extends Model
     public function toSearchableArray(): array
     {
         return $this->toArray();
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['code', 'title', 'status']);
     }
 
     public function programs(): BelongsToMany

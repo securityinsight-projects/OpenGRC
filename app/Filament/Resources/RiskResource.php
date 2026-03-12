@@ -2,23 +2,49 @@
 
 namespace App\Filament\Resources;
 
+use App\Enums\MitigationType;
+use App\Enums\RiskLevel;
 use App\Enums\RiskStatus;
-use App\Filament\Resources\RiskResource\Pages;
+use App\Filament\Columns\TaxonomyColumn;
+use App\Filament\Concerns\HasTaxonomyFields;
+use App\Filament\Exports\RiskExporter;
+use App\Filament\Filters\TaxonomySelectFilter;
+use App\Filament\Resources\RiskResource\Pages\CreateRisk;
+use App\Filament\Resources\RiskResource\Pages\ListRiskActivities;
+use App\Filament\Resources\RiskResource\Pages\ListRisks;
+use App\Filament\Resources\RiskResource\Pages\ViewRisk;
 use App\Filament\Resources\RiskResource\RelationManagers\ImplementationsRelationManager;
+use App\Filament\Resources\RiskResource\RelationManagers\MitigationsRelationManager;
+use App\Filament\Resources\RiskResource\RelationManagers\PoliciesRelationManager;
 use App\Models\Risk;
-use Filament\Forms;
-use Filament\Forms\Form;
+use Filament\Actions\Action;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\ExportAction;
+use Filament\Actions\ExportBulkAction;
+use Filament\Actions\ViewAction;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Textarea;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\ToggleButtons;
 use Filament\Resources\Resource;
-use Filament\Tables;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class RiskResource extends Resource
 {
+    use HasTaxonomyFields;
+
     protected static ?string $model = Risk::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-fire';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-fire';
 
     protected static ?string $navigationLabel = null;
 
@@ -27,147 +53,177 @@ class RiskResource extends Resource
         return __('risk-management.navigation_label');
     }
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
 
-        return $form
+        return $schema
             ->columns()
-            ->schema([
-                Forms\Components\TextInput::make('code')
+            ->components([
+                TextInput::make('code')
                     ->label('Code')
-                    ->unique('risks', 'code')
+                    ->unique('risks', 'code', ignoreRecord: true)
                     ->columnSpanFull()
                     ->required(),
-                Forms\Components\TextInput::make('name')
+                TextInput::make('name')
                     ->label('Name')
                     ->columnSpanFull()
                     ->required(),
-                Forms\Components\Textarea::make('description')
+                Textarea::make('description')
                     ->columnSpanFull()
                     ->label('Description'),
-                Forms\Components\Section::make('inherent')
+                Section::make('inherent')
                     ->columnSpan(1)
                     ->heading('Inherent Risk Scoring')
                     ->schema([
-                        Forms\Components\ToggleButtons::make('inherent_likelihood')
+                        ToggleButtons::make('inherent_likelihood')
                             ->label('Likelihood')
-                            ->options([
-                                '1' => 'Very Low',
-                                '2' => 'Low',
-                                '3' => 'Moderate',
-                                '4' => 'High',
-                                '5' => 'Very High',
-                            ])
+                            ->options(RiskLevel::options())
                             ->grouped()
                             ->required(),
-                        Forms\Components\ToggleButtons::make('inherent_impact')
+                        ToggleButtons::make('inherent_impact')
                             ->label('Impact')
-                            ->options([
-                                '1' => 'Very Low',
-                                '2' => 'Low',
-                                '3' => 'Moderate',
-                                '4' => 'High',
-                                '5' => 'Very High',
-                            ])
+                            ->options(RiskLevel::options())
                             ->grouped()
                             ->required(),
                     ]),
-                Forms\Components\Section::make('residual')
+                Section::make('residual')
                     ->columnSpan(1)
                     ->heading('Residual Risk Scoring')
                     ->schema([
-                        Forms\Components\ToggleButtons::make('residual_likelihood')
+                        ToggleButtons::make('residual_likelihood')
                             ->label('Likelihood')
-                            ->options([
-                                '1' => 'Very Low',
-                                '2' => 'Low',
-                                '3' => 'Moderate',
-                                '4' => 'High',
-                                '5' => 'Very High',
-                            ])
+                            ->options(RiskLevel::options())
                             ->grouped()
                             ->required(),
-                        Forms\Components\ToggleButtons::make('residual_impact')
+                        ToggleButtons::make('residual_impact')
                             ->label('Impact')
-                            ->options([
-                                '1' => 'Very Low',
-                                '2' => 'Low',
-                                '3' => 'Moderate',
-                                '4' => 'High',
-                                '5' => 'Very High',
-                            ])
+                            ->options(RiskLevel::options())
                             ->grouped()
                             ->required(),
                     ]),
 
-                Forms\Components\Select::make('implementations')
+                Select::make('implementations')
                     ->label('Related Implementations')
                     ->helperText('What are we doing to mitigate this risk?')
-                    ->relationship(name: 'implementations', titleAttribute: 'title')
+                    ->relationship(name: 'implementations')
+                    ->getOptionLabelFromRecordUsing(fn ($record) => "({$record->code}) {$record->title}")
                     ->searchable(['title', 'code'])
                     ->multiple(),
 
-                Forms\Components\Select::make('status')
+                Select::make('status')
                     ->label('Status')
                     ->enum(RiskStatus::class)
                     ->options(RiskStatus::class)
                     ->required(),
+                Toggle::make('is_active')
+                    ->label('Active')
+                    ->default(true)
+                    ->helperText('Inactive risks are excluded from reports and dashboards'),
+                self::taxonomySelect('Department', 'department')
+                    ->nullable()
+                    ->columnSpan(1),
+                self::taxonomySelect('Scope', 'scope')
+                    ->nullable()
+                    ->columnSpan(1),
             ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
+            ->deferLoading()
             ->defaultSort('residual_risk', 'desc')
             ->emptyStateHeading('No Risks Identified Yet')
             ->emptyStateDescription('Add and analyse your first risk by clicking the "Track New Risk" button above.')
             ->columns([
-                Tables\Columns\TextColumn::make('name')
-                    ->searchable()
+                TextColumn::make('name')
                     ->wrap()
-                    ->formatStateUsing(function ($state) {
-                        // Insert a zero-width space every 30 characters in long words
-                        return preg_replace_callback('/\S{30,}/', function ($matches) {
-                            return wordwrap($matches[0], 30, "\u{200B}", true);
-                        }, $state);
-                    })
-                    ->limit(100)
-                    ->sortable(),
-                Tables\Columns\TextColumn::make('description')
-                    ->searchable()
+                    ->limit(100),
+                TextColumn::make('description')
                     ->wrap()
-                    ->limit(250)
-                    ->sortable()
-                    ->formatStateUsing(function ($state) {
-                        // Insert a zero-width space every 50 characters in long words
-                        return preg_replace_callback('/\S{50,}/', function ($matches) {
-                            return wordwrap($matches[0], 50, "\u{200B}", true);
-                        }, $state);
-                    }),
-                Tables\Columns\TextColumn::make('inherent_risk')
+                    ->toggleable(isToggledHiddenByDefault: true)
+                    ->limit(250),
+                TextColumn::make('inherent_risk')
                     ->label('Inherent Risk')
-                    ->sortable()
-                    ->color(function (Risk $record) {
-                        return self::getRiskColor($record->inherent_likelihood, $record->inherent_impact);
-                    })
-                    ->badge(),
-                Tables\Columns\TextColumn::make('residual_risk')
-                    ->sortable()
+                    ->getStateUsing(fn (Risk $record) => RiskLevel::formatRisk($record->inherent_likelihood, $record->inherent_impact))
+                    ->color(fn (Risk $record) => RiskLevel::getFilamentColor($record->inherent_likelihood, $record->inherent_impact))
                     ->badge()
-                    ->color(function (Risk $record) {
-                        return self::getRiskColor($record->residual_likelihood, $record->residual_impact);
+                    ->sortable(),
+                TextColumn::make('residual_risk')
+                    ->label('Residual Risk')
+                    ->getStateUsing(fn (Risk $record) => RiskLevel::formatRisk($record->residual_likelihood, $record->residual_impact))
+                    ->color(fn (Risk $record) => RiskLevel::getFilamentColor($record->residual_likelihood, $record->residual_impact))
+                    ->badge()
+                    ->sortable(),
+                TaxonomyColumn::make('department'),
+                TaxonomyColumn::make('scope'),
+                TextColumn::make('mitigation_status')
+                    ->label('Mitigation')
+                    ->getStateUsing(function (Risk $record) {
+                        $strategies = $record->mitigations()->pluck('strategy')->unique()->map(fn ($s) => $s->value)->values()->toArray();
+
+                        return empty($strategies) ? ['None'] : $strategies;
+                    })
+                    ->badge()
+                    ->searchable(false)
+                    ->color(fn (string $state) => MitigationType::tryFrom($state)?->getColor() ?? 'gray')
+                    ->sortable(query: function ($query, string $direction) {
+                        return $query->withCount('mitigations')
+                            ->orderBy('mitigations_count', $direction);
                     }),
+                TextColumn::make('is_active')
+                    ->label('Status')
+                    ->getStateUsing(fn (Risk $record) => $record->is_active ? 'Active' : 'Inactive')
+                    ->badge()
+                    ->color(fn (string $state) => $state === 'Active' ? 'success' : 'gray'),
             ])
-            ->filters([])
-            ->actions([
-                Tables\Actions\ViewAction::make()
+            ->filters([
+                SelectFilter::make('inherent_likelihood')
+                    ->label('Inherent Likelihood')
+                    ->options(RiskLevel::options()),
+                SelectFilter::make('inherent_impact')
+                    ->label('Inherent Impact')
+                    ->options(RiskLevel::options()),
+                SelectFilter::make('residual_likelihood')
+                    ->label('Residual Likelihood')
+                    ->options(RiskLevel::options()),
+                SelectFilter::make('residual_impact')
+                    ->label('Residual Impact')
+                    ->options(RiskLevel::options()),
+                TaxonomySelectFilter::make('department'),
+                TaxonomySelectFilter::make('scope'),
+                SelectFilter::make('is_active')
+                    ->label('Status')
+                    ->options([
+                        '1' => 'Active',
+                        '0' => 'Inactive',
+                    ])
+                    ->default('1'),
+            ])
+            ->headerActions([
+                ExportAction::make()
+                    ->exporter(RiskExporter::class)
+                    ->icon('heroicon-o-arrow-down-tray'),
+                Action::make('reset_filters')
+                    ->label('Reset Filters')
+                    ->icon('heroicon-o-arrow-path')
+                    ->color('gray')
+                    ->alpineClickHandler("\$dispatch('reset-risk-filters')")
+                    ->visible(fn ($livewire) => $livewire->hasActiveRiskFilters ?? request()->has('tableFilters')),
+            ])
+            ->recordActions([
+                ViewAction::make()
                     ->slideOver()
                     ->hidden(),
             ])
-            ->bulkActions([
-                //                Tables\Actions\BulkActionGroup::make([
-                //                    Tables\Actions\DeleteBulkAction::make(),
-                //                ]),
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    ExportBulkAction::make()
+                        ->exporter(RiskExporter::class)
+                        ->label('Export Selected')
+                        ->icon('heroicon-o-arrow-down-tray'),
+                    DeleteBulkAction::make(),
+                ]),
             ]);
     }
 
@@ -175,16 +231,18 @@ class RiskResource extends Resource
     {
         return [
             'implementations' => ImplementationsRelationManager::class,
+            'policies' => PoliciesRelationManager::class,
+            'mitigations' => MitigationsRelationManager::class,
         ];
     }
 
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListRisks::route('/'),
-            'create' => Pages\CreateRisk::route('/create'),
-            //            'edit' => Pages\EditRisk::route('/{record}/edit'),
-            'view' => Pages\ViewRisk::route('/{record}'),
+            'index' => ListRisks::route('/'),
+            'create' => CreateRisk::route('/create'),
+            'view' => ViewRisk::route('/{record}'),
+            'activities' => ListRiskActivities::route('/{record}/activities'),
         ];
     }
 
@@ -219,24 +277,9 @@ class RiskResource extends Resource
         return ['name', 'description'];
     }
 
-    // Mentioning the following classes to prevent them from being removed.
-    // bg-grcblue-200 bg-red-200 bg-orange-200 bg-yellow-200 bg-green-200
-    // bg-grcblue-500 bg-red-500 bg-orange-500 bg-yellow-500 bg-green-500
-
-    public static function getRiskColor(int $likelihood, int $impact, int $weight = 200): string
+    public static function getEloquentQuery(): Builder
     {
-        $average = round(($likelihood + $impact) / 2);
-
-        if ($average >= 5) {
-            return "bg-red-$weight"; // High risk
-        } elseif ($average >= 4) {
-            return "bg-orange-$weight"; // Moderate-High risk
-        } elseif ($average >= 3) {
-            return "bg-yellow-$weight"; // Moderate risk
-        } elseif ($average >= 2) {
-            return "bg-grcblue-$weight"; // Moderate risk
-        } else {
-            return "bg-green-$weight"; // Low risk
-        }
+        return parent::getEloquentQuery()
+            ->with(['taxonomies']);
     }
 }

@@ -2,18 +2,23 @@
 
 namespace App\Models;
 
+use Aliziodev\LaravelTaxonomy\Traits\HasTaxonomy;
 use App\Enums\Effectiveness;
 use App\Enums\ImplementationStatus;
+use App\Mcp\Traits\HasMcpSupport;
 use Eloquent;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 /**
  * Class Implementation
@@ -51,12 +56,14 @@ use Illuminate\Support\Carbon;
  */
 class Implementation extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, HasMcpSupport, HasTaxonomy, LogsActivity, SoftDeletes;
 
     /**
      * Indicates if the model should be indexed as you type.
      */
     public bool $asYouType = true;
+
+    protected $fillable = ['code', 'title', 'details', 'status', 'notes', 'effectiveness', 'test_procedure', 'implementation_owner_id'];
 
     /**
      * The attributes that should be cast.
@@ -70,13 +77,6 @@ class Implementation extends Model
     ];
 
     /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
-    protected $fillable = ['details', 'status', 'notes', 'effectiveness'];
-
-    /**
      * The controls that belong to the implementation.
      */
     public function controls(): BelongsToMany
@@ -86,11 +86,47 @@ class Implementation extends Model
     }
 
     /**
+     * The policies that belong to the implementation.
+     */
+    public function policies(): BelongsToMany
+    {
+        return $this->belongsToMany(Policy::class, 'implementation_policy')
+            ->withTimestamps();
+    }
+
+    /**
      * The risks that belong to the implementation.
      */
     public function risks(): BelongsToMany
     {
         return $this->belongsToMany(Risk::class);
+    }
+
+    /**
+     * The assets that belong to the implementation.
+     */
+    public function assets(): BelongsToMany
+    {
+        return $this->belongsToMany(Asset::class)
+            ->withTimestamps();
+    }
+
+    /**
+     * The applications that belong to the implementation.
+     */
+    public function applications(): BelongsToMany
+    {
+        return $this->belongsToMany(Application::class)
+            ->withTimestamps();
+    }
+
+    /**
+     * The vendors that belong to the implementation.
+     */
+    public function vendors(): BelongsToMany
+    {
+        return $this->belongsToMany(Vendor::class)
+            ->withTimestamps();
     }
 
     /**
@@ -115,7 +151,7 @@ class Implementation extends Model
     public function auditItems(): MorphMany
     {
         return $this->morphMany(AuditItem::class, 'auditable')
-            ->where('auditable_type', '=', \App\Models\Implementation::class);
+            ->where('auditable_type', '=', Implementation::class);
     }
 
     /**
@@ -125,7 +161,17 @@ class Implementation extends Model
     {
         return $this->morphMany(AuditItem::class, 'auditable')
             ->where('status', '=', 'Completed')
-            ->where('auditable_type', '=', \App\Models\Implementation::class);
+            ->where('auditable_type', '=', Implementation::class);
+    }
+
+    /**
+     * Eager-loadable relationship for the latest completed audit item.
+     */
+    public function latestCompletedAudit(): MorphOne
+    {
+        return $this->morphOne(AuditItem::class, 'auditable')
+            ->where('status', '=', 'Completed')
+            ->latestOfMany('created_at');
     }
 
     /**
@@ -133,7 +179,13 @@ class Implementation extends Model
      */
     public function getEffectiveness(): Effectiveness
     {
-        return $this->completedAuditItems->pluck('effectiveness')->last() ? $this->auditItems->pluck('effectiveness')->last() : Effectiveness::UNKNOWN;
+        // Use eager-loaded relationship if available
+        if ($this->relationLoaded('latestCompletedAudit')) {
+            return $this->latestCompletedAudit?->effectiveness ?? Effectiveness::UNKNOWN;
+        }
+
+        // Fallback to querying only the latest completed audit item
+        return $this->latestCompletedAudit()->first()?->effectiveness ?? Effectiveness::UNKNOWN;
     }
 
     /**
@@ -141,7 +193,13 @@ class Implementation extends Model
      */
     public function getEffectivenessDate(): string
     {
-        return $this->completedAuditItems->pluck('effectiveness')->last() ? $this->auditItems->pluck('updated_at')->last()->format('M d, Y') : '';
+        // Use eager-loaded relationship if available
+        if ($this->relationLoaded('latestCompletedAudit')) {
+            return $this->latestCompletedAudit?->updated_at?->format('M d, Y') ?? '';
+        }
+
+        // Fallback to querying only the latest completed audit item
+        return $this->latestCompletedAudit()->first()?->updated_at?->format('M d, Y') ?? '';
     }
 
     /**
@@ -149,6 +207,14 @@ class Implementation extends Model
      */
     public function implementationOwner(): BelongsTo
     {
-        return $this->belongsTo(\App\Models\User::class, 'implementation_owner_id');
+        return $this->belongsTo(User::class, 'implementation_owner_id');
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['title', 'details', 'status', 'effectiveness', 'notes', 'test_procedure'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

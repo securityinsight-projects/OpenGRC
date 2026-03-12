@@ -3,7 +3,8 @@
 namespace App\Filament\Resources\ProgramResource\Pages;
 
 use App\Filament\Resources\ProgramResource;
-use Filament\Actions;
+use App\Filament\Widgets\TableDescriptionWidget;
+use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
 class ListPrograms extends ListRecords
@@ -18,7 +19,14 @@ class ListPrograms extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            Actions\CreateAction::make(),
+            CreateAction::make(),
+        ];
+    }
+
+    protected function getHeaderWidgets(): array
+    {
+        return [
+            TableDescriptionWidget::make(['description' => __('programs.description')]),
         ];
     }
 }

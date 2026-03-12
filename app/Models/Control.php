@@ -2,11 +2,13 @@
 
 namespace App\Models;
 
+use Aliziodev\LaravelTaxonomy\Traits\HasTaxonomy;
 use App\Enums\Applicability;
 use App\Enums\ControlCategory;
 use App\Enums\ControlEnforcementCategory;
 use App\Enums\ControlType;
 use App\Enums\Effectiveness;
+use App\Mcp\Traits\HasMcpSupport;
 use Eloquent;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -15,8 +17,11 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Carbon;
+use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Traits\LogsActivity;
 
 /**
  * Class Control
@@ -54,7 +59,7 @@ use Illuminate\Support\Carbon;
  */
 class Control extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, HasMcpSupport, HasTaxonomy, LogsActivity, SoftDeletes;
 
     /**
      * Indicates if the model should be indexed as you type.
@@ -109,6 +114,15 @@ class Control extends Model
     }
 
     /**
+     * The policies that belong to the control.
+     */
+    public function policies(): BelongsToMany
+    {
+        return $this->belongsToMany(Policy::class, 'control_policy')
+            ->withTimestamps();
+    }
+
+    /**
      * Get the audit items for the control.
      */
     public function auditItems(): MorphMany
@@ -139,9 +153,24 @@ class Control extends Model
      */
     public function latestCompletedAuditItem(): ?AuditItem
     {
+        // Use the eager-loaded relationship if available
+        if ($this->relationLoaded('latestCompletedAudit')) {
+            return $this->latestCompletedAudit;
+        }
+
         $latestCompletedAuditItem = $this->completedAuditItems()->latest()->first();
 
         return $latestCompletedAuditItem instanceof AuditItem ? $latestCompletedAuditItem : null;
+    }
+
+    /**
+     * Eager-loadable relationship for the latest completed audit item.
+     */
+    public function latestCompletedAudit(): MorphOne
+    {
+        return $this->morphOne(AuditItem::class, 'auditable')
+            ->where('status', '=', 'Completed')
+            ->latestOfMany('created_at');
     }
 
     /**
@@ -172,6 +201,14 @@ class Control extends Model
      */
     public function controlOwner(): BelongsTo
     {
-        return $this->belongsTo(\App\Models\User::class, 'control_owner_id');
+        return $this->belongsTo(User::class, 'control_owner_id');
+    }
+
+    public function getActivitylogOptions(): LogOptions
+    {
+        return LogOptions::defaults()
+            ->logOnly(['identifier', 'title', 'description', 'status', 'effectiveness', 'type', 'category', 'enforcement'])
+            ->logOnlyDirty()
+            ->dontSubmitEmptyLogs();
     }
 }

@@ -2,24 +2,47 @@
 
 namespace App\Filament\Resources;
 
-use App\Filament\Resources\ProgramResource\Pages;
-use App\Filament\Resources\ProgramResource\RelationManagers;
+use App\Filament\Columns\TaxonomyColumn;
+use App\Filament\Concerns\HasTaxonomyFields;
+use App\Filament\Exports\ProgramExporter;
+use App\Filament\Filters\TaxonomySelectFilter;
+use App\Filament\Resources\ProgramResource\Pages\CreateProgram;
+use App\Filament\Resources\ProgramResource\Pages\EditProgram;
+use App\Filament\Resources\ProgramResource\Pages\ListPrograms;
+use App\Filament\Resources\ProgramResource\Pages\ProgramPage;
+use App\Filament\Resources\ProgramResource\RelationManagers\AuditsRelationManager;
+use App\Filament\Resources\ProgramResource\RelationManagers\ControlsRelationManager;
+use App\Filament\Resources\ProgramResource\RelationManagers\RisksRelationManager;
+use App\Filament\Resources\ProgramResource\RelationManagers\StandardsRelationManager;
 use App\Models\Program;
-use Filament\Forms;
-use Filament\Forms\Form;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\ExportAction;
+use Filament\Actions\ExportBulkAction;
+use Filament\Actions\ViewAction;
+use Filament\Forms\Components\RichEditor;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
 use Filament\Tables;
+use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 
 class ProgramResource extends Resource
 {
+    use HasTaxonomyFields;
+
     protected static ?string $model = Program::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-building-office';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-building-office';
 
     protected static ?string $navigationLabel = null;
 
-    protected static ?string $navigationGroup = null;
+    protected static string|\UnitEnum|null $navigationGroup = null;
 
     public static function getNavigationLabel(): string
     {
@@ -41,26 +64,28 @@ class ProgramResource extends Resource
         return __('programs.labels.plural');
     }
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
-        return $form
-            ->schema([
-                Forms\Components\TextInput::make('name')
+        return $schema
+            ->components([
+                TextInput::make('name')
                     ->label(__('programs.form.name'))
                     ->columnSpanFull()
                     ->required()
                     ->maxLength(255),
-                Forms\Components\Textarea::make('description')
+                RichEditor::make('description')
                     ->label(__('programs.form.description'))
-                    ->maxLength(65535)
+                    ->fileAttachmentsDisk(setting('storage.driver', 'private'))
+                    ->fileAttachmentsVisibility('private')
+                    ->fileAttachmentsDirectory('ssp-uploads')
                     ->columnSpanFull(),
-                Forms\Components\Select::make('program_manager_id')
+                Select::make('program_manager_id')
                     ->label(__('programs.form.program_manager'))
                     ->relationship('programManager', 'name')
                     ->searchable()
                     ->preload()
                     ->required(),
-                Forms\Components\Select::make('scope_status')
+                Select::make('scope_status')
                     ->label(__('programs.form.scope_status'))
                     ->options([
                         'In Scope' => __('programs.scope_status.in_scope'),
@@ -68,53 +93,70 @@ class ProgramResource extends Resource
                         'Pending Review' => __('programs.scope_status.pending_review'),
                     ])
                     ->required(),
+                self::taxonomySelect('Department', 'department')
+                    ->nullable()
+                    ->columnSpan(1),
+                self::taxonomySelect('Scope', 'scope')
+                    ->nullable()
+                    ->columnSpan(1),
             ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
-            ->description(new class implements \Illuminate\Contracts\Support\Htmlable
-            {
-                public function toHtml()
-                {
-                    return "<div class='fi-section-content p-6'>" . __('programs.description') . "</div>";
-                }
-            })
+            ->deferLoading()
+            ->recordUrl(fn (Program $record): string => ProgramPage::getUrl(['record' => $record]))
             ->columns([
-                Tables\Columns\TextColumn::make('name')
+                TextColumn::make('name')
                     ->label(__('programs.table.name'))
                     ->searchable(),
-                Tables\Columns\TextColumn::make('programManager.name')
+                TextColumn::make('programManager.name')
                     ->label(__('programs.table.program_manager'))
                     ->searchable(),
-                Tables\Columns\TextColumn::make('last_audit_date')
+                TextColumn::make('last_audit_date')
                     ->label(__('programs.table.last_audit_date'))
                     ->date()
                     ->sortable(),
-                Tables\Columns\TextColumn::make('scope_status')
+                TextColumn::make('scope_status')
                     ->label(__('programs.table.scope_status'))
                     ->searchable(),
-                Tables\Columns\TextColumn::make('created_at')
+                TaxonomyColumn::make('department')
+                    ->toggleable(),
+                TaxonomyColumn::make('scope')
+                    ->toggleable(),
+                TextColumn::make('created_at')
                     ->label(__('programs.table.created_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
-                Tables\Columns\TextColumn::make('updated_at')
+                TextColumn::make('updated_at')
                     ->label(__('programs.table.updated_at'))
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                //
+                TaxonomySelectFilter::make('department'),
+                TaxonomySelectFilter::make('scope'),
             ])
-            ->actions([
-                Tables\Actions\EditAction::make(),
+            ->headerActions([
+                ExportAction::make()
+                    ->exporter(ProgramExporter::class)
+                    ->icon('heroicon-o-arrow-down-tray'),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+            ->recordActions([
+                // Tables\Actions\EditAction::make(),
+                ViewAction::make(),
+
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    ExportBulkAction::make()
+                        ->exporter(ProgramExporter::class)
+                        ->label('Export Selected')
+                        ->icon('heroicon-o-arrow-down-tray'),
+                    DeleteBulkAction::make(),
                 ]),
             ]);
     }
@@ -122,18 +164,59 @@ class ProgramResource extends Resource
     public static function getRelations(): array
     {
         return [
-            RelationManagers\StandardsRelationManager::class,
-            RelationManagers\ControlsRelationManager::class,
-            RelationManagers\RisksRelationManager::class,
+            StandardsRelationManager::class,
+            ControlsRelationManager::class,
+            RisksRelationManager::class,
+            AuditsRelationManager::class,
         ];
     }
 
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListPrograms::route('/'),
-            'create' => Pages\CreateProgram::route('/create'),
-            'edit' => Pages\EditProgram::route('/{record}/edit'),
+            'index' => ListPrograms::route('/'),
+            'create' => CreateProgram::route('/create'),
+            'view' => ProgramPage::route('/{record}'),
+            'edit' => EditProgram::route('/{record}/edit'),
         ];
+    }
+
+    public static function getEloquentQuery(): Builder
+    {
+        return parent::getEloquentQuery()
+            ->with(['taxonomies', 'programManager']);
+    }
+
+    /**
+     * @param  Program  $record
+     */
+    public static function getGlobalSearchResultTitle(Model $record): string|Htmlable
+    {
+        return $record->name;
+    }
+
+    /**
+     * @param  Program  $record
+     */
+    public static function getGlobalSearchResultUrl(Model $record): string
+    {
+        return ProgramResource::getUrl('view', ['record' => $record]);
+    }
+
+    /**
+     * @param  Program  $record
+     */
+    public static function getGlobalSearchResultDetails(Model $record): array
+    {
+        /** @var Program $record */
+        return [
+            'Manager' => $record->programManager?->getAttribute('name') ?? 'Unassigned',
+            'Scope Status' => $record->scope_status ?? 'Unknown',
+        ];
+    }
+
+    public static function getGloballySearchableAttributes(): array
+    {
+        return ['name', 'description', 'scope_status'];
     }
 }

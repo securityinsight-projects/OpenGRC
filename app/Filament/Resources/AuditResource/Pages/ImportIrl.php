@@ -10,16 +10,16 @@ use Exception;
 use Filament\Actions\Concerns\HasWizard;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Placeholder;
-use Filament\Forms\Components\Wizard;
 use Filament\Forms\Concerns\InteractsWithForms;
 use Filament\Forms\Contracts\HasForms;
-use Filament\Forms\Form;
-use Filament\Forms\Get;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\Concerns\InteractsWithRecord;
 use Filament\Resources\Pages\Page;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Wizard;
+use Filament\Schemas\Components\Wizard\Step;
+use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\HtmlString;
 use Illuminate\Validation\ValidationException;
 use League\Csv\Reader;
@@ -33,7 +33,7 @@ class ImportIrl extends Page implements HasForms
 
     protected static string $resource = AuditResource::class;
 
-    protected static string $view = 'filament.resources.audit-resource.pages.import-irl';
+    protected string $view = 'filament.resources.audit-resource.pages.import-irl';
 
     protected static ?string $title = 'IRL Import Wizard';
 
@@ -59,7 +59,11 @@ class ImportIrl extends Page implements HasForms
 
     public ?string $irl_file_path;
 
+    public ?string $irl_file_contents;
+
     public bool $isIrlFileValid = false;
+
+    public bool $isProcessing = false;
 
     public ?string $error_string = null;
 
@@ -69,20 +73,21 @@ class ImportIrl extends Page implements HasForms
         $this->form->fill();
     }
 
-    public function form(Form $form): Form
+    public function form(Schema $schema): Schema
     {
-        $this->users = User::query()->pluck('name', 'id')->toArray();
+        $this->users = User::optionsWithDeactivated();
         $this->currentDataRequests = DataRequest::query()->where('audit_id', $this->record->id)->get();
         $this->auditItems = $this->record->auditItems()->with('control')->get();
         $this->controlCodes = $this->auditItems->pluck('auditable.code')->toArray();
-        $template_url = Storage::url('irl-template.csv');
+        $template_url = '/resources/irl-template.csv';
 
-        return $form
-            ->schema([
+        return $schema
+            ->components([
                 Wizard::make([
-                    Wizard\Step::make('IRL File')
+                    Step::make('IRL File')
                         ->id('irl-file')
                         ->icon('heroicon-m-document')
+                        ->completedIcon('heroicon-m-check')
                         ->schema([
                             Placeholder::make('Introduction')
                                 ->columnSpanFull()
@@ -98,20 +103,41 @@ class ImportIrl extends Page implements HasForms
                                 ->label('IRL File')
                                 ->acceptedFileTypes(['text/csv'])
                                 ->rules([])
+                                ->loadingIndicatorPosition('right')
+                                ->helperText(fn () => $this->isProcessing ? 'Processing file, please wait...' : ($this->isIrlFileValid ? 'File processed successfully. Click Next to continue.' : 'Upload a CSV file to begin processing.'))
                                 ->afterStateUpdated(function ($state, Get $get) {
                                     if ($state) {
-                                        $this->irl_file_path = $state->getPathname();
-                                        $this->isIrlFileValid = $this->validateIrlFile() && $this->validateIrlFileData();
+                                        $this->isProcessing = true;
+                                        $this->isIrlFileValid = false;
+                                        $this->dispatch('processing-started');
+
+                                        // Read file contents directly - Livewire stores in livewire-tmp directory
+                                        try {
+                                            // $state is a TemporaryUploadedFile - read contents directly
+                                            // Use the get() method on the TemporaryUploadedFile object
+                                            $this->irl_file_contents = $state->get();
+
+                                            if (empty($this->irl_file_contents)) {
+                                                throw new Exception('File contents are empty');
+                                            }
+
+                                            $this->isIrlFileValid = $this->validateIrlFile() && $this->validateIrlFileData();
+                                        } catch (Exception $e) {
+                                            $this->addError('irl_file', 'Failed to read uploaded file: '.$e->getMessage());
+                                            $this->isIrlFileValid = false;
+                                        }
+
+                                        $this->isProcessing = false;
+                                        $this->dispatch('processing-completed');
                                     }
                                 }),
                         ])
                         ->afterValidation(function () {
-                            if (! $this->isIrlFileValid) {
-                                $this->isIrlFileValid = $this->validateIrlFileData();
+                            if ($this->isProcessing || ! $this->isIrlFileValid) {
                                 throw new Halt;
                             }
                         }),
-                    Wizard\Step::make('Review Data')
+                    Step::make('Review Data')
                         ->icon('heroicon-m-document-check')
                         ->schema([
                             Placeholder::make('Changes to be made')
@@ -134,7 +160,8 @@ class ImportIrl extends Page implements HasForms
     public function validateIrlFile(): bool
     {
         try {
-            $reader = Reader::createFromPath($this->irl_file_path, 'r');
+            // Create CSV reader from string content instead of file path
+            $reader = Reader::createFromString($this->irl_file_contents);
             $reader->setHeaderOffset(0);
             $headers = $reader->getHeader();
             $normalizedHeaders = array_map(function ($header) {
@@ -143,6 +170,7 @@ class ImportIrl extends Page implements HasForms
             $requiredHeaders = [
                 'audit id',
                 'request id',
+                'request code',
                 'control code',
                 'details',
                 'assigned to',
@@ -177,6 +205,19 @@ class ImportIrl extends Page implements HasForms
         try {
             $this->finalData = [];
             foreach ($this->irlData as $index => $row) {
+                // Stop processing if we already have 5 errors to prevent UI hang
+                if (count($error_array) >= 5) {
+                    break;
+                }
+
+                // Skip empty rows (rows with only empty values or commas)
+                $nonEmptyValues = array_filter($row, function ($value) {
+                    return ! empty(trim($value));
+                });
+                if (empty($nonEmptyValues)) {
+                    continue;
+                }
+
                 $finalRecord = [];
 
                 // If the request exists, update it
@@ -188,6 +229,8 @@ class ImportIrl extends Page implements HasForms
                     $finalRecord['_ACTION'] = 'CREATE';
                     $finalRecord['Request ID'] = null;
                 }
+                // Add Request Code
+                $finalRecord['Request Code'] = $row['Request Code'] ?? null;
 
                 // Validate that the IRL is for this audit only
                 if ($row['Audit ID'] != $this->record->id) {
@@ -210,12 +253,19 @@ class ImportIrl extends Page implements HasForms
                     $finalRecord['Assigned To'] = $this->users[$row['Assigned To']];
                 }
 
-                // Validate the control exists by control code
-                if (! in_array($row['Control Code'], $this->controlCodes)) {
-                    //                    $this->addError('irl_file', "Row $index: no control with the code of " . $row["Control Code"]);
+                // Validate the control exists by control code (supports comma-separated list)
+                $controlCodes = array_map('trim', explode(',', $row['Control Code']));
+                $invalidCodes = [];
+                foreach ($controlCodes as $code) {
+                    if (! in_array($code, $this->controlCodes)) {
+                        $invalidCodes[] = $code;
+                    }
+                }
+
+                if (! empty($invalidCodes)) {
                     $has_errors = true;
-                    $finalRecord['Control Code'] = "Control Code Not In Audit: {$row['Control Code']}";
-                    $error_array[] = "Row $index: no control with the code of ".$row['Control Code'];
+                    $finalRecord['Control Code'] = 'Control Code Not In Audit: '.implode(', ', $invalidCodes);
+                    $error_array[] = "Row $index: no control with the code(s): ".implode(', ', $invalidCodes);
                 } else {
                     $finalRecord['Control Code'] = $row['Control Code'];
                 }
@@ -230,14 +280,28 @@ class ImportIrl extends Page implements HasForms
                     $finalRecord['Details'] = $row['Details'];
                 }
 
-                // If $row["Due On"] is not a valid date error
-                if (! preg_match('/^(0[1-9]|1[0-2])\/(0[1-9]|[12][0-9]|3[01])\/\d{4}$/', $row['Due On'])) {
-                    //                    $this->addError('irl_file', "Row $index: 'due on' must be a valid date in mm/dd/yyyy format.");
+                // Gracefully handle date formatting - auto-format single digit months/days
+                $dueDate = trim($row['Due On']);
+
+                // Try to auto-format dates like "1/5/2024" to "01/05/2024"
+                if (preg_match('/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/', $dueDate, $matches)) {
+                    $month = str_pad($matches[1], 2, '0', STR_PAD_LEFT);
+                    $day = str_pad($matches[2], 2, '0', STR_PAD_LEFT);
+                    $year = $matches[3];
+                    $formattedDate = "$month/$day/$year";
+
+                    // Validate the formatted date
+                    if (preg_match('/^(0[1-9]|1[0-2])\/(0[1-9]|[12][0-9]|3[01])\/\d{4}$/', $formattedDate)) {
+                        $finalRecord['Due On'] = $formattedDate;
+                    } else {
+                        $has_errors = true;
+                        $finalRecord['Due On'] = 'Invalid Date Format';
+                        $error_array[] = "Row $index: 'due on' must be a valid date in mm/dd/yyyy format.";
+                    }
+                } else {
                     $has_errors = true;
                     $finalRecord['Due On'] = 'Invalid Date Format';
                     $error_array[] = "Row $index: 'due on' must be a valid date in mm/dd/yyyy format.";
-                } else {
-                    $finalRecord['Due On'] = $row['Due On'];
                 }
 
                 if ($has_errors) {
@@ -249,7 +313,16 @@ class ImportIrl extends Page implements HasForms
 
             if ($has_errors) {
                 $this->isIrlFileValid = false;
-                $this->error_string = implode(' | ', $error_array);
+
+                // Show errors and indicate if processing was stopped early
+                $displayErrors = $error_array;
+                if (count($error_array) >= 5) {
+                    $totalRows = count($this->irlData);
+                    $processedRows = count($this->finalData);
+                    $displayErrors[] = "Processing stopped after {$processedRows} of {$totalRows} rows due to multiple errors. Please fix the above errors and try again.";
+                }
+
+                $this->error_string = implode(' | ', $displayErrors);
                 $this->addError('irl_file', $this->error_string);
 
                 return false;
@@ -281,13 +354,33 @@ class ImportIrl extends Page implements HasForms
 
         foreach ($this->finalData as $row) {
             if ($row['_ACTION'] == 'CREATE') {
+                // Handle multiple control codes (comma-separated)
+                $controlCodes = array_map('trim', explode(',', $row['Control Code']));
+
+                // Collect audit item IDs for all control codes
+                $auditItemIds = [];
+                foreach ($controlCodes as $controlCode) {
+                    $auditItem = $this->auditItems->where('auditable.code', $controlCode)->first();
+                    if ($auditItem) {
+                        $auditItemIds[] = $auditItem->id;
+                    }
+                }
+
+                if (empty($auditItemIds)) {
+                    continue; // Skip if no valid controls found
+                }
+
+                // Create a single data request
                 $dataRequest = new DataRequest;
                 $dataRequest->audit_id = $row['Audit ID'];
-                $dataRequest->audit_item_id = $this->auditItems->where('auditable.code', $row['Control Code'])->first()->id;
                 $dataRequest->details = $row['Details'];
                 $dataRequest->assigned_to_id = array_search($row['Assigned To'], $this->users);
                 $dataRequest->created_by_id = auth()->id();
+                $dataRequest->code = $row['Request Code'] ?? null;
                 $dataRequest->save();
+
+                // Attach all audit items to this data request
+                $dataRequest->auditItems()->attach($auditItemIds);
 
                 // Create a Matching DataRequestResponse
                 $dataRequestResponse = new DataRequestResponse;
@@ -301,6 +394,7 @@ class ImportIrl extends Page implements HasForms
                 $dataRequest = DataRequest::find($row['Request ID']);
                 $dataRequest->details = $row['Details'];
                 $dataRequest->assigned_to_id = array_search($row['Assigned To'], $this->users);
+                $dataRequest->code = $row['Request Code'] ?? $dataRequest->code;
                 $dataRequest->save();
 
                 $dataRequestResponse = $dataRequest->responses()->first();

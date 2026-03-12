@@ -1,147 +1,179 @@
-FROM php:8.3-apache AS base
+FROM ubuntu:24.04
 
-# --------------
-# Install needed Debian/Ubuntu packages
-# ------------------------------------------------
-RUN apt-get clean && apt-get update && apt-get install -y \
-    libpng-dev \
-    libzip-dev \
-    libicu-dev \
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Set versions
+ENV PHP_VERSION=8.3
+ENV NODE_VERSION=20.x
+
+ENV COMPOSER_ALLOW_SUPERUSER=1
+
+# Install repository management tools and add custom repositories
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    curl \
+    ca-certificates \
+    gnupg \
+    apt-utils \
+    && add-apt-repository ppa:ondrej/php \
+    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION} | bash - \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install all application packages
+RUN apt-get update && apt-get install -y \
+    # Apache2
+    apache2 \
+    # PHP and extensions
+    php${PHP_VERSION} \
+    php${PHP_VERSION}-cli \
+    php${PHP_VERSION}-fpm \
+    php${PHP_VERSION}-common \
+    php${PHP_VERSION}-mysql \
+    php${PHP_VERSION}-sqlite3 \
+    php${PHP_VERSION}-zip \
+    php${PHP_VERSION}-gd \
+    php${PHP_VERSION}-mbstring \
+    php${PHP_VERSION}-curl \
+    php${PHP_VERSION}-xml \
+    php${PHP_VERSION}-bcmath \
+    php${PHP_VERSION}-intl \
+    php${PHP_VERSION}-dom \
+    # Node.js (from NodeSource repository)
+    nodejs \
+    # System utilities
     zip \
-    unzip 
+    cron \
+    wget \
+    unzip \
+    git \
+    openssl \
+    sudo \
+    # Cleanup
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN docker-php-ext-install pdo pdo_mysql bcmath intl zip gd
-
-##############################
-# 1) Stage: Build everything
-##############################
-
-FROM base AS build
-
-# Install nodejs and npm
-
-ENV NODE_VERSION=20.19.1
-
-RUN apt-get update && apt-get install -y gnupg2
-
-RUN ARCH= && dpkgArch="$(dpkg --print-architecture)" \
-  && case "${dpkgArch##*-}" in \
-    amd64) ARCH='x64';; \
-    ppc64el) ARCH='ppc64le';; \
-    s390x) ARCH='s390x';; \
-    arm64) ARCH='arm64';; \
-    armhf) ARCH='armv7l';; \
-    i386) ARCH='x86';; \
-    *) echo "unsupported architecture"; exit 1 ;; \
-  esac \
-  # use pre-existing gpg directory, see https://github.com/nodejs/docker-node/pull/1895#issuecomment-1550389150
-  && export GNUPGHOME="$(mktemp -d)" \
-  # gpg keys listed at https://github.com/nodejs/node#release-keys
-  && set -ex \
-  && for key in \
-    C0D6248439F1D5604AAFFB4021D900FFDB233756 \
-    DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7 \
-    CC68F5A3106FF448322E48ED27F5E38D5B0A215F \
-    8FCCA13FEF1D0C2E91008E09770F7A9A5AE15600 \
-    890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4 \
-    C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C \
-    108F52B48DB57BB0CC439B2997B01419BD92F80A \
-    A363A499291CBBC940DD62E41F10027AF002F8B0 \
-  ; do \
-      gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key" || \
-      gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key" ; \
-  done \
-  && curl -fsSLO --compressed "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH.tar.xz" \
-  && curl -fsSLO --compressed "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt.asc" \
-  && gpg --batch --decrypt --output SHASUMS256.txt SHASUMS256.txt.asc \
-  && gpgconf --kill all \
-  && rm -rf "$GNUPGHOME" \
-  && grep " node-v$NODE_VERSION-linux-$ARCH.tar.xz\$" SHASUMS256.txt | sha256sum -c - \
-  && tar -xJf "node-v$NODE_VERSION-linux-$ARCH.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
-  && rm "node-v$NODE_VERSION-linux-$ARCH.tar.xz" SHASUMS256.txt.asc SHASUMS256.txt \
-  && ln -s /usr/local/bin/node /usr/local/bin/nodejs \
-  # smoke tests
-  && node --version \
-  && npm --version \
-  && rm -rf /tmp/*
-
-# Copy Composer from official image
+# Install Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Set the working directory
-WORKDIR /var/www/html
+# Configure PHP-FPM pool for performance
+RUN sed -i 's/pm = dynamic/pm = ondemand/' /etc/php/${PHP_VERSION}/fpm/pool.d/www.conf \
+    && sed -i 's/pm.max_children = .*/pm.max_children = 20/' /etc/php/${PHP_VERSION}/fpm/pool.d/www.conf \
+    && sed -i 's/;pm.process_idle_timeout = .*/pm.process_idle_timeout = 10s/' /etc/php/${PHP_VERSION}/fpm/pool.d/www.conf \
+    && sed -i 's/;pm.max_requests = .*/pm.max_requests = 500/' /etc/php/${PHP_VERSION}/fpm/pool.d/www.conf \
+    && sed -i 's/memory_limit = .*/memory_limit = 256M/' /etc/php/${PHP_VERSION}/fpm/php.ini \
+    && sed -i 's/upload_max_filesize = .*/upload_max_filesize = 20M/' /etc/php/${PHP_VERSION}/fpm/php.ini \
+    && sed -i 's/post_max_size = .*/post_max_size = 20M/' /etc/php/${PHP_VERSION}/fpm/php.ini \
+    && sed -i 's/max_execution_time = .*/max_execution_time = 60/' /etc/php/${PHP_VERSION}/fpm/php.ini
 
-COPY composer.json composer.lock /var/www/html/
+# Configure PHP-FPM to log to file
+RUN sed -i 's|;error_log = log/php8.3-fpm.log|error_log = /var/log/php8.3-fpm.log|' /etc/php/${PHP_VERSION}/fpm/php-fpm.conf \
+    && sed -i 's|;catch_workers_output = yes|catch_workers_output = yes|' /etc/php/${PHP_VERSION}/fpm/pool.d/www.conf
 
-# Install Composer dependencies
-RUN composer install --no-scripts
+# Enable Apache modules for PHP-FPM
+RUN a2enmod rewrite \
+    && a2enmod headers \
+    && a2enmod expires \
+    && a2enmod ssl \
+    && a2enmod proxy \
+    && a2enmod proxy_fcgi \
+    && a2enmod setenvif \
+    && a2enmod remoteip \
+    && a2dismod mpm_prefork \
+    && a2enmod mpm_event \
+    && a2enconf php${PHP_VERSION}-fpm
 
-# Copy application code
-COPY . .
+# Configure RemoteIP to trust load balancer
+RUN echo 'RemoteIPHeader X-Forwarded-For\n\
+RemoteIPTrustedProxy 10.0.0.0/8\n\
+RemoteIPTrustedProxy 172.16.0.0/12\n\
+RemoteIPTrustedProxy 192.168.0.0/16\n\
+RemoteIPTrustedProxy 100.64.0.0/10\n\
+RemoteIPInternalProxy 10.0.0.0/8\n\
+RemoteIPInternalProxy 172.16.0.0/12\n\
+RemoteIPInternalProxy 192.168.0.0/16\n\
+RemoteIPInternalProxy 100.64.0.0/10' > /etc/apache2/conf-available/remoteip.conf
 
-# Install Composer dependencies (including dev dependencies) and run initial setup
-RUN composer update && php artisan opengrc:install --unattended
+RUN a2enconf remoteip
 
-########################################
-# 2) Stage: Final - Production runtime
-########################################
-FROM base AS production
+# Configure Apache to listen on port 80
+RUN echo 'Listen 80' > /etc/apache2/ports.conf
 
-# Copy Composer binary (needed to remove dev dependencies and cache)
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+# Create Apache VirtualHost for Laravel
+RUN echo '<VirtualHost *:80>\n\
+    ServerAdmin webmaster@localhost\n\
+    DocumentRoot /var/www/html/public\n\
+    \n\
+    <Directory /var/www/html/public>\n\
+        Options -Indexes +FollowSymLinks\n\
+        AllowOverride All\n\
+        Require all granted\n\
+    </Directory>\n\
+    \n\
+    <FilesMatch \\.php$>\n\
+        SetHandler "proxy:unix:/run/php/php8.3-fpm.sock|fcgi://localhost"\n\
+    </FilesMatch>\n\
+    \n\
+    ErrorLog ${APACHE_LOG_DIR}/error.log\n\
+    CustomLog ${APACHE_LOG_DIR}/access.log combined\n\
+</VirtualHost>' > /etc/apache2/sites-available/000-default.conf
+
+# Set ServerName to suppress warnings
+RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
 # Set working directory
 WORKDIR /var/www/html
 
-# Copy entire Laravel app (including vendor) from build stage
-COPY --from=build /var/www/html .
+# Copy application code
+COPY . .
 
-# Remove PHP development dependencies and clear Composer cache
-RUN composer install --no-dev --optimize-autoloader && \
-    composer clear-cache && \
-    rm -rf /root/.composer/cache
+# Install PHP dependencies
+RUN composer install --no-dev --optimize-autoloader
 
-# Remove node_modules
-RUN rm -rf /var/www/html/node_modules
+# Copy package files and install Node dependencies
+COPY package*.json ./
+RUN npm ci
 
-# Make sure storage and bootstrap/cache are writable
-RUN mkdir -p storage/framework/cache/data bootstrap/cache \
-    && chown -R www-data:www-data storage bootstrap/cache /var/www/html \
-    && chmod -R 775 storage bootstrap/cache /var/www/html
-    
-# Ensure there's a sqlite file
-RUN touch /var/www/html/database/opengrc.sqlite
+# Complete Composer installation with autoloader optimization
+RUN composer dump-autoload --optimize --classmap-authoritative
 
-# Enable Apache mod_rewrite
-RUN a2enmod rewrite
+# Build frontend assets
+RUN npm run build
 
-# Listen on port 8080 instead of 80
-RUN sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf
-EXPOSE 8080
+# Clean up Node modules after build
+RUN rm -rf node_modules
 
-# Update the default vhost to point to /var/www/html/public
-RUN sed -i 's!/var/www/html!/var/www/html/public!g' /etc/apache2/sites-available/000-default.conf
+# Create necessary directories and set permissions
+RUN mkdir -p storage/framework/cache/data \
+    storage/framework/sessions \
+    storage/framework/views \
+    storage/logs \
+    bootstrap/cache \
+    database \
+    && touch storage/logs/laravel.log \
+    && chown -R www-data:www-data /var/www/html \
+    && chmod -R 775 storage bootstrap/cache database \
+    && chmod 664 storage/logs/laravel.log
 
-# Replace the VirtualHost port in 000-default.conf
-RUN sed -i 's/80/8080/g' /etc/apache2/sites-available/000-default.conf
+# Create PHP-FPM run directory
+RUN mkdir -p /run/php
 
-# Allow .htaccess overrides and full access
-RUN echo "<Directory /var/www/html/public>\n\
-    AllowOverride All\n\
-    Require all granted\n\
-</Directory>\n" >> /etc/apache2/apache2.conf
+# Set up Laravel scheduler cron job
+RUN echo "* * * * * www-data cd /var/www/html && php artisan schedule:run >> /dev/null 2>&1" > /etc/cron.d/laravel-cron \
+    && chmod 0644 /etc/cron.d/laravel-cron
 
-# Set a server name
-RUN echo "ServerName 0.0.0.0" >> /etc/apache2/apache2.conf
+# Expose port 80
+EXPOSE 80
 
-COPY ./entrypoint.sh /entrypoint.sh
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=5 \
+    CMD curl -f http://localhost/ || exit 1
 
-RUN chmod +x /entrypoint.sh
+# Copy and set up entrypoint script
+COPY docker-entrypoint.sh /var/www/html/docker-entrypoint.sh
+RUN chmod +x /var/www/html/docker-entrypoint.sh
 
-RUN mkdir -p /var/www/html/storage/framework/cache/data
-RUN chown -R www-data:www-data /var/www/html/storage/framework/cache/data
-
-USER www-data
-
-# Use shell form instead of exec form to ensure proper execution
-ENTRYPOINT ["/bin/bash", "-c", "/entrypoint.sh"]
+ENTRYPOINT ["/var/www/html/docker-entrypoint.sh"]

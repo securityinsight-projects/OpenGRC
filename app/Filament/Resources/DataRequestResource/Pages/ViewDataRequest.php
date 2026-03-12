@@ -6,8 +6,8 @@ use App\Filament\Resources\DataRequestResource;
 use App\Models\DataRequest;
 use App\Models\DataRequestResponse;
 use Filament\Actions\Action;
-use Filament\Forms\Form;
 use Filament\Resources\Pages\ViewRecord;
+use Filament\Schemas\Schema;
 
 class ViewDataRequest extends ViewRecord
 {
@@ -15,9 +15,9 @@ class ViewDataRequest extends ViewRecord
 
     protected static ?string $title = 'Data Request Viewer';
 
-    public function form(Form $form): Form
+    public function form(Schema $schema): Schema
     {
-        return DataRequestResource::getEditForm($form);
+        return DataRequestResource::getEditForm($schema);
     }
 
     /**
@@ -28,11 +28,18 @@ class ViewDataRequest extends ViewRecord
         /** @var DataRequest $record */
         $record = $this->record;
 
-        return [
-            Action::make('back')
+        $actions = [];
+
+        // Add the accept, reject, reassign actions
+        $actions = array_merge($actions, DataRequestResource::getPageFooterActions($record));
+
+        if ($record->audit_item_id) {
+            $actions[] = Action::make('back')
                 ->label('Back to Audit Item')
                 ->icon('heroicon-m-arrow-left')
-                ->url(route('filament.app.resources.audit-items.edit', $record->audit_item_id)),
-        ];
+                ->url(route('filament.app.resources.audit-items.edit', $record->audit_item_id));
+        }
+
+        return $actions;
     }
 }

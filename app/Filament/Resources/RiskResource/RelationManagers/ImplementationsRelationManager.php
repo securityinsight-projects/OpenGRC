@@ -3,25 +3,55 @@
 namespace App\Filament\Resources\RiskResource\RelationManagers;
 
 use App\Filament\Resources\ImplementationResource;
-use Filament\Forms\Form;
+use Filament\Actions\AttachAction;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\CreateAction;
+use Filament\Actions\DetachAction;
+use Filament\Actions\DetachBulkAction;
+use Filament\Actions\EditAction;
+use Filament\Actions\ViewAction;
 use Filament\Resources\RelationManagers\RelationManager;
-use Filament\Tables;
+use Filament\Schemas\Schema;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class ImplementationsRelationManager extends RelationManager
 {
     protected static string $relationship = 'implementations';
 
-    public function form(Form $form): Form
+    public function form(Schema $schema): Schema
     {
-        return ImplementationResource::getForm($form);
+        return ImplementationResource::getForm($schema);
     }
 
     public function table(Table $table): Table
     {
         $table = ImplementationResource::getTable($table);
-        $table->actions([
-            Tables\Actions\ViewAction::make()->hidden(),
+        $table->modifyQueryUsing(fn (Builder $query) => $query->with(['latestCompletedAudit', 'implementationOwner' => fn ($q) => $q->withTrashed()]));
+        $table->headerActions([
+            CreateAction::make()
+                ->label('New Implementation'),
+            AttachAction::make()
+                ->label('Add Existing Implementation')
+                ->preloadRecordSelect()
+                ->recordSelectOptionsQuery(function (Builder $query) {
+                    $query->select(['implementations.id', 'code', 'title']);
+                })
+                ->recordTitle(function ($record) {
+                    return strip_tags("({$record->code}) {$record->title}");
+                })
+                ->recordSelectSearchColumns(['code', 'title']),
+        ]);
+        $table->recordActions([
+            ViewAction::make()->hidden(),
+            EditAction::make()
+                ->modalHeading('Edit Implementation'),
+            DetachAction::make(),
+        ]);
+        $table->toolbarActions([
+            BulkActionGroup::make([
+                DetachBulkAction::make()->label('Detach from Risk'),
+            ]),
         ]);
 
         return $table;

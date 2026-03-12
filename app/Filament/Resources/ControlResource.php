@@ -2,41 +2,62 @@
 
 namespace App\Filament\Resources;
 
-use AmidEsfahani\FilamentTinyEditor\TinyEditor;
 use App\Enums\Applicability;
 use App\Enums\ControlCategory;
 use App\Enums\ControlEnforcementCategory;
 use App\Enums\ControlType;
 use App\Enums\Effectiveness;
-use App\Filament\Resources\ControlResource\Pages;
-use App\Filament\Resources\ControlResource\RelationManagers;
+use App\Filament\Columns\TaxonomyColumn;
+use App\Filament\Concerns\HasTaxonomyFields;
+use App\Filament\Exports\ControlExporter;
+use App\Filament\Filters\TaxonomySelectFilter;
+use App\Filament\Resources\ControlResource\Pages\CreateControl;
+use App\Filament\Resources\ControlResource\Pages\EditControl;
+use App\Filament\Resources\ControlResource\Pages\ListControls;
+use App\Filament\Resources\ControlResource\Pages\ViewControl;
+use App\Filament\Resources\ControlResource\RelationManagers\AuditItemRelationManager;
+use App\Filament\Resources\ControlResource\RelationManagers\ImplementationRelationManager;
+use App\Filament\Resources\ControlResource\RelationManagers\PoliciesRelationManager;
 use App\Models\Control;
 use App\Models\Standard;
 use App\Models\User;
 use Exception;
-use Filament\Forms;
-use Filament\Forms\Form;
-use Filament\Infolists\Components\Section;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\ExportAction;
+use Filament\Actions\ExportBulkAction;
+use Filament\Actions\ForceDeleteBulkAction;
+use Filament\Actions\RestoreBulkAction;
+use Filament\Forms\Components\RichEditor;
+use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Infolists\Components\TextEntry;
-use Filament\Infolists\Infolist;
+use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Resources\Resource;
-use Filament\Tables;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Schema;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletingScope;
 use Illuminate\Support\HtmlString;
+use Livewire\Component;
 
 class ControlResource extends Resource
 {
+    use HasTaxonomyFields;
+
     protected static ?string $model = Control::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-stop-circle';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-stop-circle';
 
     protected static ?string $navigationLabel = null;
 
-    protected static ?string $navigationGroup = null;
+    protected static string|\UnitEnum|null $navigationGroup = null;
 
     protected static ?int $navigationSort = 20;
 
@@ -62,57 +83,86 @@ class ControlResource extends Resource
 
     protected static ?string $recordTitleAttribute = 'title';
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
-        return $form
+        return $schema
             ->columns(3)
-            ->schema([
-                Forms\Components\TextInput::make('code')
+            ->components([
+                TextInput::make('code')
                     ->required()
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.code.tooltip'))
                     ->maxLength(255)
                     ->unique(Control::class, 'code', ignoreRecord: true)
                     ->live()
-                    ->afterStateUpdated(function (Forms\Contracts\HasForms $livewire, Forms\Components\TextInput $component) {
+                    ->afterStateUpdated(function (Component $livewire, TextInput $component) {
                         $livewire->validateOnly($component->getStatePath());
                     }),
-                Forms\Components\Select::make('standard_id')
+                Select::make('standard_id')
                     ->label(__('control.form.standard.label'))
-                    ->searchable()
+
                     ->options(Standard::pluck('name', 'id')->toArray())
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.standard.tooltip'))
+                    ->default(function (Get $get, Select $component) {
+                        $livewire = $component->getLivewire();
+                        if ($livewire instanceof RelationManager) {
+                            return $livewire->getOwnerRecord()->getKey();
+                        }
+
+                        return null;
+                    })
+                    ->disabled(function (Select $component) {
+                        $livewire = $component->getLivewire();
+
+                        return $livewire instanceof RelationManager;
+                    })
+                    ->dehydrated()
                     ->required(),
-                Forms\Components\Select::make('enforcement')
+                Select::make('enforcement')
                     ->options(ControlEnforcementCategory::class)
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.enforcement.tooltip'))
                     ->required(),
-                Forms\Components\TextInput::make('title')
+                Select::make('type')
+                    ->label(__('control.form.type.label'))
+                    ->options(ControlType::class)
+                    ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.type.tooltip'))
+                    ->required(),
+                Select::make('category')
+                    ->label(__('control.form.category.label'))
+                    ->options(ControlCategory::class)
+                    ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.category.tooltip'))
+                    ->required(),
+                Select::make('control_owner_id')
+                    ->label('Control Owner')
+                    ->options(fn (string $operation): array => $operation === 'create' ? User::activeOptions() : User::optionsWithDeactivated())
+
+                    ->nullable()
+                    ->columnSpan(1),
+                self::taxonomySelect('Department', 'department')
+                    ->nullable()
+                    ->columnSpan(1),
+                self::taxonomySelect('Scope', 'scope')
+                    ->nullable()
+                    ->columnSpan(1),
+                TextInput::make('title')
                     ->required()
                     ->columnSpanFull()
                     ->maxLength(1024)
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.title.tooltip'))
                     ->maxLength(1024),
-                TinyEditor::make('description')
+                RichEditor::make('description')
                     ->required()
                     ->maxLength(65535)
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.description.tooltip'))
-                    ->extraInputAttributes(['class' => 'filament-forms-rich-editor-unfiltered'])
                     ->columnSpanFull(),
-                TinyEditor::make('discussion')
+                RichEditor::make('discussion')
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.discussion.tooltip'))
                     ->maxLength(65535)
                     ->columnSpanFull(),
-                TinyEditor::make('test')
+                RichEditor::make('test')
                     ->label(__('control.form.test.label'))
                     ->hintIcon('heroicon-m-question-mark-circle', tooltip: __('control.form.test.tooltip'))
                     ->maxLength(65535)
                     ->columnSpanFull(),
-                Forms\Components\Select::make('control_owner_id')
-                    ->label('Control Owner')
-                    ->options(User::pluck('name', 'id')->toArray())
-                    ->searchable()
-                    ->nullable()
-                    ->columnSpan(1),
             ]);
     }
 
@@ -122,104 +172,98 @@ class ControlResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->description(new class implements \Illuminate\Contracts\Support\Htmlable
-            {
-                public function toHtml()
-                {
-                    return "<div class='fi-section-content p-6'>" . 
-                        __('control.table.description') . 
-                        "</div>";
-                }
-            })
+            ->deferLoading()
             ->emptyStateHeading(__('control.table.empty_state.heading'))
             ->emptyStateDescription(new HtmlString(__('control.table.empty_state.description', [
-                'url' => route('filament.app.resources.bundles.index')
+                'url' => route('filament.app.resources.controls.index'),
             ])))
             ->columns([
-                Tables\Columns\TextColumn::make('code')
-                    ->label(__('control.table.columns.code'))
-                    ->sortable()
-                    ->searchable(),
-                Tables\Columns\TextColumn::make('title')
+                TextColumn::make('code')
+                    ->label(__('control.table.columns.code')),
+                TextColumn::make('title')
                     ->label(__('control.table.columns.title'))
-                    ->sortable()
-                    ->searchable()
                     ->wrap(),
-                Tables\Columns\TextColumn::make('standard.name')
+                TextColumn::make('standard.name')
                     ->label(__('control.table.columns.standard'))
-                    ->wrap()
-                    ->sortable(),
-                Tables\Columns\TextColumn::make('type')
-                    ->label(__('control.table.columns.type'))
-                    ->sortable(),
-                Tables\Columns\TextColumn::make('category')
-                    ->label(__('control.table.columns.category'))
-                    ->sortable(),
-                Tables\Columns\TextColumn::make('enforcement')
-                    ->label(__('control.table.columns.enforcement'))
-                    ->sortable(),
-                Tables\Columns\TextColumn::make('LatestAuditEffectiveness')
+                    ->wrap(),
+                TextColumn::make('type')
+                    ->label(__('control.table.columns.type')),
+                TextColumn::make('category')
+                    ->label(__('control.table.columns.category')),
+                TextColumn::make('enforcement')
+                    ->label(__('control.table.columns.enforcement')),
+                TextColumn::make('LatestAuditEffectiveness')
                     ->label(__('control.table.columns.effectiveness'))
                     ->badge()
-                    ->sortable()
+                    ->searchable(false)
                     ->default(function (Control $record) {
                         return $record->getEffectiveness();
                     }),
-                Tables\Columns\TextColumn::make('applicability')
+                TextColumn::make('applicability')
                     ->label(__('control.table.columns.applicability'))
-                    ->sortable()
                     ->badge(),
-                Tables\Columns\TextColumn::make('LatestAuditDate')
+                TextColumn::make('LatestAuditDate')
                     ->label(__('control.table.columns.assessed'))
-                    ->sortable()
+                    ->searchable(false)
                     ->default(function (Control $record) {
                         return $record->getEffectivenessDate();
                     }),
-                Tables\Columns\TextColumn::make('controlOwner.name')
+                TextColumn::make('controlOwner.name')
                     ->label('Owner')
-                    ->sortable()
-                    ->searchable()
-                    ->toggleable(),
-                Tables\Columns\TextColumn::make('created_at')
+                    ->formatStateUsing(fn ($record): string => $record->controlOwner?->displayName() ?? ''),
+                TaxonomyColumn::make('department'),
+                TaxonomyColumn::make('scope'),
+                TextColumn::make('created_at')
                     ->label(__('control.table.columns.created_at'))
                     ->dateTime()
-                    ->sortable()
+
                     ->toggleable(isToggledHiddenByDefault: true),
-                Tables\Columns\TextColumn::make('updated_at')
+                TextColumn::make('updated_at')
                     ->label(__('control.table.columns.updated_at'))
                     ->dateTime()
-                    ->sortable()
+
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
-                Tables\Filters\SelectFilter::make('standard_id')
+                SelectFilter::make('standard_id')
                     ->options(Standard::pluck('name', 'id')->toArray())
                     ->multiple()
                     ->label(__('control.table.filters.standard')),
-                Tables\Filters\SelectFilter::make('effectiveness')
+                SelectFilter::make('effectiveness')
                     ->options(Effectiveness::class)
                     ->label(__('control.table.filters.effectiveness')),
-                Tables\Filters\SelectFilter::make('type')
+                SelectFilter::make('type')
                     ->options(ControlType::class)
                     ->label(__('control.table.filters.type')),
-                Tables\Filters\SelectFilter::make('category')
+                SelectFilter::make('category')
                     ->options(ControlCategory::class)
                     ->label(__('control.table.filters.category')),
-                Tables\Filters\SelectFilter::make('enforcement')
+                SelectFilter::make('enforcement')
                     ->options(ControlEnforcementCategory::class)
                     ->label(__('control.table.filters.enforcement')),
-                Tables\Filters\SelectFilter::make('applicability')
+                SelectFilter::make('applicability')
                     ->options(Applicability::class)
                     ->label(__('control.table.filters.applicability')),
-                Tables\Filters\SelectFilter::make('control_owner_id')
+                SelectFilter::make('control_owner_id')
                     ->label('Owner')
-                    ->options(User::pluck('name', 'id')->toArray()),
+                    ->options(User::optionsWithDeactivated()),
+                TaxonomySelectFilter::make('department'),
+                TaxonomySelectFilter::make('scope'),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
-                    Tables\Actions\ForceDeleteBulkAction::make(),
-                    Tables\Actions\RestoreBulkAction::make(),
+            ->headerActions([
+                ExportAction::make()
+                    ->exporter(ControlExporter::class)
+                    ->icon('heroicon-o-arrow-down-tray'),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    ExportBulkAction::make()
+                        ->exporter(ControlExporter::class)
+                        ->label('Export Selected')
+                        ->icon('heroicon-o-arrow-down-tray'),
+                    DeleteBulkAction::make(),
+                    ForceDeleteBulkAction::make(),
+                    RestoreBulkAction::make(),
                 ]),
             ]);
     }
@@ -227,18 +271,19 @@ class ControlResource extends Resource
     public static function getRelations(): array
     {
         return [
-            RelationManagers\ImplementationRelationManager::class,
-            RelationManagers\AuditItemRelationManager::class,
+            ImplementationRelationManager::class,
+            AuditItemRelationManager::class,
+            PoliciesRelationManager::class,
         ];
     }
 
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListControls::route('/'),
-            'create' => Pages\CreateControl::route('/create'),
-            'view' => Pages\ViewControl::route('/{record}'),
-            'edit' => Pages\EditControl::route('/{record}/edit'),
+            'index' => ListControls::route('/'),
+            'create' => CreateControl::route('/create'),
+            'view' => ViewControl::route('/{record}'),
+            'edit' => EditControl::route('/{record}/edit'),
         ];
     }
 
@@ -247,17 +292,17 @@ class ControlResource extends Resource
         return parent::getEloquentQuery()
             ->withoutGlobalScopes([
                 SoftDeletingScope::class,
-            ]);
+            ])
+            ->with(['taxonomies', 'latestCompletedAudit', 'controlOwner' => fn ($q) => $q->withTrashed(), 'standard']);
     }
 
-    public static function infolist(Infolist $infolist): Infolist
+    public static function infolist(Schema $schema): Schema
     {
-        return $infolist
-            ->schema([
+        return $schema
+            ->components([
                 Section::make(__('control.infolist.section_title'))
-                    ->columns(3)
+                    ->columnSpanFull()
                     ->schema([
-                        TextEntry::make('title')->columnSpanFull(),
                         TextEntry::make('code'),
                         TextEntry::make('effectiveness')
                             ->default(function (Control $record) {
@@ -270,6 +315,17 @@ class ControlResource extends Resource
                             ->default(function (Control $record) {
                                 return $record->getEffectivenessDate();
                             }),
+                        TextEntry::make('taxonomies')
+                            ->label('Department')
+                            ->getStateUsing(function (Control $record) {
+                                return self::getTaxonomyTerm($record, 'department')?->name ?? 'Not assigned';
+                            }),
+                        TextEntry::make('taxonomies')
+                            ->label('Scope')
+                            ->getStateUsing(function (Control $record) {
+                                return self::getTaxonomyTerm($record, 'scope')?->name ?? 'Not assigned';
+                            }),
+                        TextEntry::make('title')->columnSpanFull(),
                         TextEntry::make('description')
                             ->columnSpanFull()
                             ->extraAttributes(['class' => 'control-description-text'])
@@ -283,7 +339,7 @@ class ControlResource extends Resource
                             ->columnSpanFull()
                             ->hidden(fn (Control $record) => ! $record->discussion)
                             ->html(),
-                    ]),
+                    ])->columns(4),
             ]);
     }
 

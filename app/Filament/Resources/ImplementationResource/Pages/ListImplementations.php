@@ -3,7 +3,8 @@
 namespace App\Filament\Resources\ImplementationResource\Pages;
 
 use App\Filament\Resources\ImplementationResource;
-use Filament\Actions;
+use App\Filament\Widgets\TableDescriptionWidget;
+use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
 class ListImplementations extends ListRecords
@@ -13,8 +14,15 @@ class ListImplementations extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            Actions\CreateAction::make()
+            CreateAction::make()
                 ->label(__('implementation.actions.create')),
+        ];
+    }
+
+    protected function getHeaderWidgets(): array
+    {
+        return [
+            TableDescriptionWidget::make(['description' => __('implementation.table.description')]),
         ];
     }
 }

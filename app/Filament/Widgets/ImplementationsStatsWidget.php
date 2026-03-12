@@ -8,9 +8,11 @@ use Filament\Widgets\ChartWidget;
 
 class ImplementationsStatsWidget extends ChartWidget
 {
-    protected static ?string $heading = null;
+    protected static bool $isLazy = false;
 
-    protected static ?string $maxHeight = '250px';
+    protected ?string $heading = null;
+
+    protected ?string $maxHeight = '250px';
 
     protected int|string|array $columnSpan = '1';
 
@@ -23,17 +25,30 @@ class ImplementationsStatsWidget extends ChartWidget
 
     protected function getData(): array
     {
-        $effective = Implementation::where('effectiveness', Effectiveness::EFFECTIVE)->count();
-        $partial = Implementation::where('effectiveness', Effectiveness::PARTIAL)->count();
-        $ineffective = Implementation::where('effectiveness', Effectiveness::INEFFECTIVE)->count();
-        $unknown = Implementation::where('effectiveness', Effectiveness::UNKNOWN)->count();
+        // Single query with conditional aggregation for all effectiveness counts
+        $counts = Implementation::selectRaw('
+            SUM(CASE WHEN effectiveness = ? THEN 1 ELSE 0 END) as effective,
+            SUM(CASE WHEN effectiveness = ? THEN 1 ELSE 0 END) as partial,
+            SUM(CASE WHEN effectiveness = ? THEN 1 ELSE 0 END) as ineffective,
+            SUM(CASE WHEN effectiveness = ? THEN 1 ELSE 0 END) as unknown
+        ', [
+            Effectiveness::EFFECTIVE->value,
+            Effectiveness::PARTIAL->value,
+            Effectiveness::INEFFECTIVE->value,
+            Effectiveness::UNKNOWN->value,
+        ])->first();
+
+        $effective = (int) ($counts->effective ?? 0);
+        $partial = (int) ($counts->partial ?? 0);
+        $ineffective = (int) ($counts->ineffective ?? 0);
+        $unknown = (int) ($counts->unknown ?? 0);
 
         return [
             'labels' => [
                 __('widgets.implementations_stats.effective'),
                 __('widgets.implementations_stats.partially_effective'),
                 __('widgets.implementations_stats.ineffective'),
-                __('widgets.implementations_stats.not_assessed')
+                __('widgets.implementations_stats.not_assessed'),
             ],
             'datasets' => [
                 [

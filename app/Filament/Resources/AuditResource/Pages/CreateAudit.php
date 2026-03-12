@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\AuditResource\Pages;
 
 use App\Enums\WorkflowStatus;
+use App\Filament\Forms\Components\ActionableMultiselectTwoSides;
 use App\Filament\Resources\AuditResource;
 use App\Models\Control;
 use App\Models\Implementation;
@@ -10,24 +11,108 @@ use App\Models\Program;
 use App\Models\Standard;
 use App\Models\User;
 use Filament\Forms\Components\DatePicker;
-use Filament\Forms\Components\Grid;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
-use Filament\Forms\Components\Section;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
-use Filament\Forms\Components\Wizard\Step;
-use Filament\Forms\Get;
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Resources\Pages\CreateRecord\Concerns\HasWizard;
+use Filament\Schemas\Components\Grid;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Components\Wizard\Step;
 use Illuminate\Support\HtmlString;
-use LucasGiovanny\FilamentMultiselectTwoSides\Forms\Components\Fields\MultiselectTwoSides;
 
 class CreateAudit extends CreateRecord
 {
-    use CreateRecord\Concerns\HasWizard;
+    use HasWizard;
 
     protected static string $resource = AuditResource::class;
+
+    /**
+     * Cache for audit items data to prevent repeated queries during Livewire updates.
+     *
+     * @var array<string, array{controls: array, metadata: array}>
+     */
+    protected array $auditItemsCache = [];
+
+    /**
+     * Get the controls and metadata for the audit, with caching.
+     *
+     * @return array{controls: array, metadata: array}
+     */
+    protected function getAuditItemsData(?string $auditType, ?string $standardId, ?string $programId): array
+    {
+        $cacheKey = "{$auditType}:{$standardId}:{$programId}";
+
+        if (isset($this->auditItemsCache[$cacheKey])) {
+            return $this->auditItemsCache[$cacheKey];
+        }
+
+        $controls = [];
+        $metadata = [];
+
+        if ($auditType === 'standards' && $standardId) {
+            $controlModels = Control::where('standard_id', '=', $standardId)
+                ->with('latestCompletedAudit')
+                ->get();
+            $controls = $controlModels->mapWithKeys(function ($control) {
+                return [$control->id => $control->code.' - '.$control->title];
+            })->toArray();
+            $metadata = $controlModels->mapWithKeys(function ($control) {
+                $latestAudit = $control->latestCompletedAudit;
+
+                return [$control->id => [
+                    'effectiveness' => $control->getEffectiveness(),
+                    'applicability' => $control->applicability,
+                    'control_owner_id' => $control->control_owner_id,
+                    'standard_id' => $control->standard_id,
+                    'last_assessed_at' => $latestAudit?->updated_at?->toDateTimeString(),
+                ]];
+            })->toArray();
+        } elseif ($auditType === 'implementations') {
+            $implementationModels = Implementation::query()
+                ->with('latestCompletedAudit')
+                ->get();
+            $controls = $implementationModels->mapWithKeys(function ($implementation) {
+                return [$implementation->id => $implementation->code.' - '.$implementation->title];
+            })->toArray();
+            $metadata = $implementationModels->mapWithKeys(function ($implementation) {
+                $latestAudit = $implementation->latestCompletedAudit;
+
+                return [$implementation->id => [
+                    'effectiveness' => $implementation->getEffectiveness(),
+                    'status' => $implementation->status,
+                    'implementation_owner_id' => $implementation->implementation_owner_id,
+                    'last_assessed_at' => $latestAudit?->updated_at?->toDateTimeString(),
+                ]];
+            })->toArray();
+        } elseif ($auditType === 'program' && $programId) {
+            $program = Program::find($programId);
+            if ($program) {
+                $controlModels = $program->getAllControls(['latestCompletedAudit']);
+                $controls = $controlModels->mapWithKeys(function ($control) {
+                    return [$control->id => $control->code.' - '.$control->title];
+                })->toArray();
+                $metadata = $controlModels->mapWithKeys(function ($control) {
+                    $latestAudit = $control->latestCompletedAudit;
+
+                    return [$control->id => [
+                        'effectiveness' => $control->getEffectiveness(),
+                        'applicability' => $control->applicability,
+                        'control_owner_id' => $control->control_owner_id,
+                        'standard_id' => $control->standard_id,
+                        'last_assessed_at' => $latestAudit?->updated_at?->toDateTimeString(),
+                    ]];
+                })->toArray();
+            }
+        }
+
+        $this->auditItemsCache[$cacheKey] = ['controls' => $controls, 'metadata' => $metadata];
+
+        return $this->auditItemsCache[$cacheKey];
+    }
 
     public function getSteps(): array
     {
@@ -102,7 +187,7 @@ class CreateAudit extends CreateRecord
                         ->label('Audit Manager')
                         ->required()
                         ->hint('Who will be managing this audit?')
-                        ->options(User::query()->pluck('name', 'id')->toArray())
+                        ->options(User::activeOptions())
                         ->columns(1)
                         ->default(fn () => auth()->id())
                         ->searchable(),
@@ -117,6 +202,12 @@ class CreateAudit extends CreateRecord
                         ->required(),
                     Hidden::make('status')
                         ->default(WorkflowStatus::NOTSTARTED),
+                    AuditResource::taxonomySelect('Department', 'department')
+                        ->nullable()
+                        ->columnSpan(1),
+                    AuditResource::taxonomySelect('Scope', 'scope')
+                        ->nullable()
+                        ->columnSpan(1),
                 ]),
 
             Step::make('Audit Details')
@@ -125,47 +216,56 @@ class CreateAudit extends CreateRecord
                     Grid::make(1)
                         ->schema(
                             function (Get $get): array {
-                                $audit_type = $get('audit_type');
-                                $standard_id = $get('sid');
-                                $implementation_ids = $get('implementation_ids');
-                                $allDefaults = [];
+                                $auditType = $get('audit_type');
+                                $standardId = $get('sid');
+                                $programId = $get('program_id');
 
-                                if ($audit_type == 'standards') {
-                                    $controls = Control::where('standard_id', '=', $standard_id)
-                                        ->get()
-                                        ->mapWithKeys(function ($control) {
-                                            return [$control->id => $control->code.' - '.$control->title];
-                                        });
-                                } elseif ($audit_type == 'implementations') {
-                                    $controls = Implementation::query()
-                                        ->get()
-                                        ->mapWithKeys(function ($implementation) {
-                                            return [$implementation->id => $implementation->code.' - '.$implementation->title];
-                                        })
-                                        ->toArray();
-                                } elseif ($audit_type == 'program') {
-                                    $program_id = $get('program_id');
-                                    if ($program_id) {
-                                        $program = Program::find($program_id);
-                                        $controls = $program->getAllControls()
-                                            ->mapWithKeys(function ($control) {
-                                                return [$control->id => $control->code.' - '.$control->title];
-                                            });
-                                    } else {
-                                        $controls = [];
-                                    }
-                                } else {
-                                    $controls = [];
-                                }
+                                $data = $this->getAuditItemsData($auditType, $standardId, $programId);
+                                $controls = $data['controls'];
+                                $metadata = $data['metadata'];
 
                                 return [
-                                    MultiselectTwoSides::make('controls')
+                                    ActionableMultiselectTwoSides::make('controls')
                                         ->options($controls)
+                                        ->optionsMetadata($metadata)
                                         ->selectableLabel('Available Items')
                                         ->selectedLabel('Selected Items')
                                         ->enableSearch()
-                                        ->default(! is_array($controls) ? $controls->toArray() : $controls)
-                                        ->required(),
+                                        ->default($controls)
+                                        ->required()
+                                        ->addDropdownAction(
+                                            name: 'randomSelect',
+                                            label: 'Random Select',
+                                            type: 'random',
+                                            options: [
+                                                ['label' => 'Random 5', 'count' => 5],
+                                                ['label' => 'Random 10', 'count' => 10],
+                                                ['label' => 'Random 20', 'count' => 20],
+                                            ],
+                                            icon: 'heroicon-o-sparkles'
+                                        )
+                                        ->addDropdownAction(
+                                            name: 'randomUnassessed',
+                                            label: 'Random (Unassessed)',
+                                            type: 'randomUnassessed',
+                                            options: [
+                                                ['label' => '5 Unassessed', 'count' => 5],
+                                                ['label' => '10 Unassessed', 'count' => 10],
+                                                ['label' => 'All Unassessed', 'count' => 0],
+                                            ],
+                                            icon: 'heroicon-o-question-mark-circle'
+                                        )
+                                        ->addDropdownAction(
+                                            name: 'oldestAssessed',
+                                            label: 'Oldest Assessed',
+                                            type: 'oldest',
+                                            options: [
+                                                ['label' => '5 Oldest', 'count' => 5],
+                                                ['label' => '10 Oldest', 'count' => 10],
+                                                ['label' => '20 Oldest', 'count' => 20],
+                                            ],
+                                            icon: 'heroicon-o-clock'
+                                        ),
                                 ];
                             }),
                 ]),
